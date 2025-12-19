@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Local config (has absolute paths)
+.mcp.json
+
+# Test artifacts
+test-vault/
+.pytest_cache/
+
+# Database
+*.db
+
+# Reference docs (not part of project)
+mcp-llms-full.txt
+mcp-python-sdk.md

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "memex": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/memex", "memex-md-mcp"],
+      "env": {
+        "OBSIDIAN_VAULTS": "/path/to/vault1:/path/to/vault2"
+      }
+    }
+  }
+}
