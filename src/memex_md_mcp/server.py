@@ -26,8 +26,8 @@ mcp = FastMCP(
 
 
 def parse_vaults_env() -> dict[str, Path]:
-    """Parse OBSIDIAN_VAULTS env var into {vault_id: path} dict."""
-    vaults_env = os.environ.get("OBSIDIAN_VAULTS", "")
+    """Parse MEMEX_VAULTS env var into {vault_id: path} dict."""
+    vaults_env = os.environ.get("MEMEX_VAULTS", "")
     if not vaults_env:
         return {}
     vaults = {}
@@ -65,7 +65,7 @@ async def search(
     vaults = parse_vaults_env()
 
     if not vaults:
-        return [{"error": "No vaults configured. Set OBSIDIAN_VAULTS env var."}]
+        return [{"error": "No vaults configured. Set MEMEX_VAULTS env var."}]
 
     conn = get_connection()
 
@@ -158,7 +158,7 @@ async def explore(
     """
     vaults = parse_vaults_env()
     if not vaults:
-        return {"error": "No vaults configured. Set OBSIDIAN_VAULTS env var."}
+        return {"error": "No vaults configured. Set MEMEX_VAULTS env var."}
 
     if vault not in vaults:
         return {"error": f"Vault '{vault}' not found. Available: {list(vaults.keys())}"}

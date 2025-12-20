@@ -34,7 +34,7 @@ In `~/.claude/settings.json`:
 ```json
 {
   "env": {
-    "OBSIDIAN_VAULTS": "/home/user/obsidian/knowledge"
+    "MEMEX_VAULTS": "/home/user/obsidian/knowledge"
   },
   "mcpServers": {
     "memex": {
@@ -56,7 +56,7 @@ In your project's `.mcp.json`, use variable expansion to append to global vaults
       "command": "uvx",
       "args": ["memex-md-mcp@latest"],
       "env": {
-        "OBSIDIAN_VAULTS": "${OBSIDIAN_VAULTS}:/home/user/projects/myproject/docs"
+        "MEMEX_VAULTS": "${MEMEX_VAULTS}:/home/user/projects/myproject/docs"
       }
     }
   }
