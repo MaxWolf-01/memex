@@ -103,6 +103,9 @@ async def search(
             seen.add(key)
             combined.append(note)
 
+    configured_vault_names = set(vaults.keys())
+    combined = [n for n in combined if n.vault in configured_vault_names]
+
     if not combined:
         return [{"message": f"No results for '{query}'", "vaults_searched": list(vaults.keys())}]
 
