@@ -1,11 +1,12 @@
 [project]
 name = "memex-md-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server for semantic search over markdown vaults"
 readme = "README.md"
 requires-python = ">=3.14"
 license = "MIT"
 authors = [{ name = "Maximilian Wolf" }]
+keywords = ["mcp", "obsidian", "markdown", "semantic-search", "embeddings", "claude", "agent", "agentic", "llm", "rag"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -16,7 +17,13 @@ classifiers = [
 dependencies = [
     "mcp[cli]>=1.24.0",
     "python-frontmatter>=1.1.0",
+    "sentence-transformers>=5.2.0",
+    "sqlite-vec>=0.1.6",
 ]
+
+[project.urls]
+Repository = "https://github.com/MaxWolf-01/memex"
+Issues = "https://github.com/MaxWolf-01/memex/issues"
 
 [project.optional-dependencies]
 dev = [

@@ -1,9 +1,12 @@
-"""SQLite database for note indexing with FTS5 full-text search."""
+"""SQLite database for note indexing with FTS5 and vector search."""
 
 import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+
+import numpy as np
+import sqlite_vec
 
 from memex_md_mcp.parser import ParsedNote
 
@@ -25,12 +28,15 @@ class IndexedNote:
 
 
 def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
-    """Get a database connection with optimal settings."""
+    """Get a database connection with optimal settings and sqlite-vec loaded."""
     path = db_path or DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")  # better concurrent read performance
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
@@ -95,10 +101,20 @@ CREATE INDEX IF NOT EXISTS idx_wikilinks_source ON wikilinks(source_path, source
 CREATE INDEX IF NOT EXISTS idx_wikilinks_target ON wikilinks(target_path);
 """
 
+EMBEDDING_DIM = 768
+
+VEC_SCHEMA = f"""
+CREATE VIRTUAL TABLE IF NOT EXISTS notes_vec USING vec0(
+    note_rowid INTEGER PRIMARY KEY,
+    embedding float[{EMBEDDING_DIM}] distance_metric=cosine
+);
+"""
+
 
 def init_db(conn: sqlite3.Connection) -> None:
     """Initialize database schema."""
     conn.executescript(SCHEMA)
+    conn.executescript(VEC_SCHEMA)
     conn.commit()
 
 
@@ -179,6 +195,35 @@ def get_indexed_mtimes(conn: sqlite3.Connection, vault: str) -> dict[str, float]
     return {row["path"]: row["mtime"] for row in rows}
 
 
+def list_notes(conn: sqlite3.Connection, vault: str | None = None, limit: int | None = None) -> list[IndexedNote]:
+    """List all notes, optionally filtered by vault."""
+    if vault:
+        query = "SELECT * FROM notes WHERE vault = ? ORDER BY path"
+        params: tuple = (vault,)
+    else:
+        query = "SELECT * FROM notes ORDER BY vault, path"
+        params = ()
+
+    if limit:
+        query += " LIMIT ?"
+        params = (*params, limit)
+
+    rows = conn.execute(query, params).fetchall()
+    return [
+        IndexedNote(
+            path=row["path"],
+            vault=row["vault"],
+            title=row["title"],
+            aliases=json.loads(row["aliases"]),
+            tags=json.loads(row["tags"]),
+            content=row["content"],
+            mtime=row["mtime"],
+            content_hash=row["content_hash"],
+        )
+        for row in rows
+    ]
+
+
 def search_fts(conn: sqlite3.Connection, query: str, vault: str | None = None, limit: int = 10) -> list[IndexedNote]:
     """Full-text search across notes.
 
@@ -225,11 +270,94 @@ def search_fts(conn: sqlite3.Connection, query: str, vault: str | None = None, l
     ]
 
 
-def get_backlinks(conn: sqlite3.Connection, vault: str, target_path: str) -> list[str]:
-    """Find all notes that link to the given note path."""
-    # Match on target_raw since target_path resolution isn't implemented yet
+def get_outlinks(conn: sqlite3.Connection, vault: str, path: str) -> list[str]:
+    """Get all wikilink targets from a note (what this note links TO)."""
+    rows = conn.execute(
+        "SELECT target_raw FROM wikilinks WHERE source_vault = ? AND source_path = ?",
+        (vault, path),
+    ).fetchall()
+    return [row["target_raw"] for row in rows]
+
+
+def get_backlinks(conn: sqlite3.Connection, vault: str, note_name: str) -> list[str]:
+    """Find all notes that link TO the given note.
+
+    Args:
+        vault: Vault to search in
+        note_name: The note name as it appears in wikilinks, i.e. the filename without extension
+    """
     rows = conn.execute(
         "SELECT DISTINCT source_path FROM wikilinks WHERE source_vault = ? AND target_raw = ?",
-        (vault, target_path),
+        (vault, note_name),
     ).fetchall()
     return [row["source_path"] for row in rows]
+
+
+def upsert_embedding(conn: sqlite3.Connection, note_rowid: int, embedding: np.ndarray) -> None:
+    """Insert or update embedding for a note."""
+    conn.execute("DELETE FROM notes_vec WHERE note_rowid = ?", (note_rowid,))
+    conn.execute(
+        "INSERT INTO notes_vec (note_rowid, embedding) VALUES (?, ?)",
+        (note_rowid, embedding.astype(np.float32)),
+    )
+    conn.commit()
+
+
+def get_note_rowid(conn: sqlite3.Connection, vault: str, path: str) -> int | None:
+    """Get the rowid for a note by vault and path."""
+    row = conn.execute("SELECT rowid FROM notes WHERE vault = ? AND path = ?", (vault, path)).fetchone()
+    return row[0] if row else None
+
+
+def get_note_embedding(conn: sqlite3.Connection, vault: str, path: str) -> np.ndarray | None:
+    """Get the embedding vector for a note."""
+    rowid = get_note_rowid(conn, vault, path)
+    if rowid is None:
+        return None
+    row = conn.execute("SELECT embedding FROM notes_vec WHERE note_rowid = ?", (rowid,)).fetchone()
+    return np.frombuffer(row[0], dtype=np.float32) if row else None
+
+
+def search_semantic(
+    conn: sqlite3.Connection, query_embedding: np.ndarray, vault: str | None = None, limit: int = 10
+) -> list[tuple[IndexedNote, float]]:
+    """Semantic search using vector similarity. Returns (note, distance) pairs."""
+    if vault:
+        rows = conn.execute(
+            """
+            SELECT notes.*, notes_vec.distance
+            FROM notes_vec
+            JOIN notes ON notes.rowid = notes_vec.note_rowid
+            WHERE notes_vec.embedding MATCH ? AND k = ? AND notes.vault = ?
+            ORDER BY distance
+            """,
+            (query_embedding.astype(np.float32), limit, vault),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT notes.*, notes_vec.distance
+            FROM notes_vec
+            JOIN notes ON notes.rowid = notes_vec.note_rowid
+            WHERE notes_vec.embedding MATCH ? AND k = ?
+            ORDER BY distance
+            """,
+            (query_embedding.astype(np.float32), limit),
+        ).fetchall()
+
+    return [
+        (
+            IndexedNote(
+                path=row["path"],
+                vault=row["vault"],
+                title=row["title"],
+                aliases=json.loads(row["aliases"]),
+                tags=json.loads(row["tags"]),
+                content=row["content"],
+                mtime=row["mtime"],
+                content_hash=row["content_hash"],
+            ),
+            row["distance"],
+        )
+        for row in rows
+    ]

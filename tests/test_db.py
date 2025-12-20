@@ -2,15 +2,20 @@
 
 import sqlite3
 
+import numpy as np
 import pytest
+import sqlite_vec
 
 from memex_md_mcp.db import (
     delete_note,
     delete_vault,
     get_indexed_mtimes,
     get_note,
+    get_note_rowid,
     init_db,
     search_fts,
+    search_semantic,
+    upsert_embedding,
     upsert_note,
 )
 from memex_md_mcp.parser import ParsedNote
@@ -21,6 +26,9 @@ def conn():
     """In-memory database for testing."""
     connection = sqlite3.connect(":memory:")
     connection.row_factory = sqlite3.Row
+    connection.enable_load_extension(True)
+    sqlite_vec.load(connection)
+    connection.enable_load_extension(False)
     init_db(connection)
     yield connection
     connection.close()
@@ -175,6 +183,55 @@ class TestSearchFts:
         results = search_fts(conn, "python")
 
         assert len(results) == 1
+
+
+class TestSearchSemantic:
+    @pytest.fixture
+    def notes_with_embeddings(self, conn):
+        """Create notes with embeddings for semantic search tests."""
+        note1 = ParsedNote(
+            title="python-note",
+            aliases=[],
+            tags=[],
+            wikilinks=[],
+            content="Python programming patterns.",
+        )
+        note2 = ParsedNote(
+            title="rust-note",
+            aliases=[],
+            tags=[],
+            wikilinks=[],
+            content="Rust programming patterns.",
+        )
+        upsert_note(conn, "vault1", "python.md", note1, 1000.0, "h1")
+        upsert_note(conn, "vault2", "rust.md", note2, 1000.0, "h2")
+
+        # Create distinct embeddings (normalized)
+        emb1 = np.array([1.0] + [0.0] * 767, dtype=np.float32)
+        emb2 = np.array([0.0, 1.0] + [0.0] * 766, dtype=np.float32)
+
+        rowid1 = get_note_rowid(conn, "vault1", "python.md")
+        rowid2 = get_note_rowid(conn, "vault2", "rust.md")
+        assert rowid1 is not None
+        assert rowid2 is not None
+        upsert_embedding(conn, rowid1, emb1)
+        upsert_embedding(conn, rowid2, emb2)
+
+        return {"emb1": emb1, "emb2": emb2}
+
+    def test_basic_semantic_search(self, conn, notes_with_embeddings):
+        query_emb = notes_with_embeddings["emb1"]
+        results = search_semantic(conn, query_emb, limit=5)
+
+        assert len(results) == 2
+        assert results[0][0].title == "python-note"
+
+    def test_semantic_search_with_vault_filter(self, conn, notes_with_embeddings):
+        query_emb = notes_with_embeddings["emb1"]
+        results = search_semantic(conn, query_emb, vault="vault2", limit=5)
+
+        assert len(results) == 1
+        assert results[0][0].vault == "vault2"
 
 
 class TestGetIndexedMtimes:

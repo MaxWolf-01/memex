@@ -4,6 +4,7 @@ import sqlite3
 import time
 
 import pytest
+import sqlite_vec
 
 from memex_md_mcp.db import get_note, init_db, search_fts
 from memex_md_mcp.indexer import content_hash, discover_files, index_all_vaults, index_vault
@@ -13,6 +14,9 @@ from memex_md_mcp.indexer import content_hash, discover_files, index_all_vaults,
 def conn():
     connection = sqlite3.connect(":memory:")
     connection.row_factory = sqlite3.Row
+    connection.enable_load_extension(True)
+    sqlite_vec.load(connection)
+    connection.enable_load_extension(False)
     init_db(connection)
     yield connection
     connection.close()

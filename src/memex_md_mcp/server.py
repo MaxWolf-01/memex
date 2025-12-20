@@ -1,11 +1,22 @@
 """MCP server for semantic search over markdown vaults."""
 
 import os
+from importlib.metadata import metadata
 from pathlib import Path
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from memex_md_mcp.db import get_connection, search_fts
+from memex_md_mcp.db import (
+    IndexedNote,
+    get_backlinks,
+    get_connection,
+    get_note,
+    get_note_embedding,
+    get_outlinks,
+    search_fts,
+    search_semantic,
+)
+from memex_md_mcp.embeddings import embed_text
 from memex_md_mcp.indexer import index_all_vaults
 
 mcp = FastMCP(
@@ -31,13 +42,25 @@ def parse_vaults_env() -> dict[str, Path]:
 
 
 @mcp.tool()
-async def search(query: str, vault: str | None = None, limit: int = 10, ctx: Context | None = None) -> list[dict]:
+async def search(
+    query: str,
+    vault: str | None = None,
+    limit: int = 5,
+    concise: bool = False,
+    ctx: Context | None = None,
+) -> list[dict]:
     """Search across markdown vaults using semantic + full-text search.
 
+    Use this to find notes when you don't know exact names or want conceptual matches.
+    Combines keyword matching (FTS) with semantic similarity.
+
     Args:
-        query: Natural language search query
+        query: Search query - can be keywords or natural language
+               (e.g., "terraform state locking", "auth system architecture decisions",
+               "error handling preferences for this project")
         vault: Specific vault to search (None = all vaults)
         limit: Maximum number of results to return
+        concise: If True, return only vault/path/title. If False (default), full content.
     """
     vaults = parse_vaults_env()
 
@@ -58,11 +81,36 @@ async def search(query: str, vault: str | None = None, limit: int = 10, ctx: Con
     if total_changed > 0:
         await log(f"Indexed {total_changed} changed files ({total_indexed} total)")
 
-    results = search_fts(conn, query, vault=vault, limit=limit)
+    fts_results = search_fts(conn, query, vault=vault, limit=limit)
+
+    query_embedding = embed_text(query)
+    semantic_results = search_semantic(conn, query_embedding, vault=vault, limit=limit)
+
     conn.close()
 
-    if not results:
+    seen: set[tuple[str, str]] = set()
+    combined: list[IndexedNote] = []
+
+    for note in fts_results:
+        key = (note.vault, note.path)
+        if key not in seen:
+            seen.add(key)
+            combined.append(note)
+
+    for note, _distance in semantic_results:
+        key = (note.vault, note.path)
+        if key not in seen:
+            seen.add(key)
+            combined.append(note)
+
+    if not combined:
         return [{"message": f"No results for '{query}'", "vaults_searched": list(vaults.keys())}]
+
+    if concise:
+        return [
+            {"vault": r.vault, "path": r.path, "title": r.title}
+            for r in combined[:limit]
+        ]
 
     return [
         {
@@ -73,36 +121,112 @@ async def search(query: str, vault: str | None = None, limit: int = 10, ctx: Con
             "tags": r.tags,
             "content": r.content,
         }
-        for r in results
+        for r in combined[:limit]
     ]
 
 
+def path_to_note_name(path: str) -> str:
+    """Convert a note path to the name used in wikilinks (filename without .md)."""
+    return Path(path).stem
+
+
 @mcp.tool()
-def get_mcp_instructions() -> str:
-    """Get instructions for using this MCP server."""
-    return """
-# memex
+async def explore(
+    note_path: str,
+    vault: str,
+    concise: bool = False,
+    ctx: Context | None = None,
+) -> dict:
+    """Explore the neighborhood of a specific note.
 
-Semantic search over markdown vaults (like Obsidian).
+    Use after search() to understand a note's context. Returns three types of connections:
 
-## Configuration
+    - **outlinks**: Notes this note links to via [[wikilinks]]. Shows intentional references.
+      A null resolved_path means the target is referenced but doesn't exist yet.
+    - **backlinks**: Notes that link TO this note. Shows what depends on or references this concept.
+    - **similar**: Semantically similar notes that AREN'T already linked. Surfaces hidden
+      connections - notes about related concepts that might be worth linking.
 
-Set the OBSIDIAN_VAULTS environment variable with colon-separated paths:
-  OBSIDIAN_VAULTS="/path/to/vault1:/path/to/vault2"
+    The combination helps you understand both the explicit graph structure (wikilinks)
+    and implicit conceptual relationships (embeddings).
 
-## Tools
+    Args:
+        note_path: Relative path within the vault
+        vault: The vault containing the note
+        concise: If True, return only paths/titles for linked notes (no full content).
+                 If False (default), include full content for the main note.
+    """
+    vaults = parse_vaults_env()
+    if not vaults:
+        return {"error": "No vaults configured. Set OBSIDIAN_VAULTS env var."}
 
-- search(query, vault?, limit?) - Search across vaults
-- get_mcp_instructions() - Show this help
+    if vault not in vaults:
+        return {"error": f"Vault '{vault}' not found. Available: {list(vaults.keys())}"}
 
-## Example
+    conn = get_connection()
 
-Search for notes about "python async patterns":
-  search("python async patterns")
+    async def log(msg: str) -> None:
+        if ctx:
+            await ctx.info(msg)
 
-Search in a specific vault:
-  search("git workflow", vault="work")
-""".strip()
+    await log(f"Checking index for vault '{vault}'...")
+    index_all_vaults(conn, {vault: vaults[vault]}, on_progress=lambda _: None)
+
+    note = get_note(conn, vault, note_path)
+    if not note:
+        conn.close()
+        return {"error": f"Note not found: {vault}/{note_path}"}
+
+    outlink_targets = get_outlinks(conn, vault, note_path)
+    note_name = path_to_note_name(note_path)
+    backlink_paths = get_backlinks(conn, vault, note_name)
+
+    # Find semantically similar notes that aren't already linked
+    similar_notes: list[tuple[IndexedNote, float]] = []
+    embedding = get_note_embedding(conn, vault, note_path)
+    if embedding is not None:
+        candidates = search_semantic(conn, embedding, vault=vault, limit=10)  # fetch extra to filter
+        excluded_paths = {note_path} | set(backlink_paths)
+        for candidate, distance in candidates:
+            if candidate.path not in excluded_paths:
+                similar_notes.append((candidate, distance))
+            if len(similar_notes) >= 5:
+                break
+
+    conn.close()
+
+    if concise:
+        return {
+            "note": {"vault": note.vault, "path": note.path, "title": note.title},
+            "outlinks": [{"target": t, "resolved_path": None} for t in outlink_targets],
+            "backlinks": [{"path": p} for p in backlink_paths],
+            "similar": [{"path": n.path, "title": n.title, "distance": round(d, 3)} for n, d in similar_notes],
+        }
+
+    return {
+        "note": {
+            "vault": note.vault,
+            "path": note.path,
+            "title": note.title,
+            "aliases": note.aliases,
+            "tags": note.tags,
+            "content": note.content,
+        },
+        "outlinks": [{"target": t, "resolved_path": None} for t in outlink_targets],
+        "backlinks": [{"path": p} for p in backlink_paths],
+        "similar": [
+            {"vault": n.vault, "path": n.path, "title": n.title, "distance": round(d, 3)}
+            for n, d in similar_notes
+        ],
+    }
+
+
+@mcp.tool()
+def mcp_info() -> str:
+    """Get setup instructions and example workflow for this MCP server."""
+    readme = metadata("memex-md-mcp").get_payload()  # type: ignore[attr-defined]
+    assert readme, "Package metadata missing README content"
+    return readme
 
 
 def main() -> None:

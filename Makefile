@@ -1,4 +1,4 @@
-.PHONY: test check format lint typecheck install dev clean build publish
+.PHONY: test check format lint typecheck install dev clean build publish release
 
 test:
 	uv run pytest
@@ -37,3 +37,11 @@ build: clean
 
 publish: build
 	uv publish
+
+release:
+	@uv run python -c 'import tomllib; s=open("pyproject.toml","r",encoding="utf-8").read(); v=tomllib.loads(s)["project"]["version"]; a,mi,pa=map(int,v.split(".")); nv=f"{a}.{mi}.{pa+1}"; open("pyproject.toml","w",encoding="utf-8").write(s.replace(f"version = \"{v}\"", f"version = \"{nv}\"", 1)); print(f"Bumped to {nv}")'
+	@VERSION=$$(grep 'version = ' pyproject.toml | head -1 | cut -d'"' -f2) && \
+		git add pyproject.toml && \
+		git commit -m "Release v$$VERSION" && \
+		git tag "v$$VERSION" && \
+		git push && git push --tags

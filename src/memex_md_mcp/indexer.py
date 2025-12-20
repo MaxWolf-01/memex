@@ -7,7 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from sqlite3 import Connection
 
-from memex_md_mcp.db import delete_note, get_indexed_mtimes, init_db, upsert_note
+from memex_md_mcp.db import delete_note, get_indexed_mtimes, get_note_rowid, init_db, upsert_embedding, upsert_note
+from memex_md_mcp.embeddings import embed_text
 from memex_md_mcp.parser import parse_note
 
 
@@ -93,6 +94,11 @@ def index_vault(
             mtime = disk_files[rel_path]
             chash = content_hash(note.content)
             upsert_note(conn, vault_id, rel_path, note, mtime, chash)
+
+            rowid = get_note_rowid(conn, vault_id, rel_path)
+            if rowid is not None:
+                embedding = embed_text(note.content)
+                upsert_embedding(conn, rowid, embedding)
 
             if rel_path in new_paths:
                 stats.added += 1
