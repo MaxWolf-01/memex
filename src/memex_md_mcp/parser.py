@@ -2,6 +2,7 @@
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 import frontmatter
 
@@ -12,7 +13,7 @@ class ParsedNote:
     aliases: list[str]  # from YAML frontmatter
     tags: list[str]  # #tag from content + frontmatter
     wikilinks: list[str]  # [[target]] links
-    content: str  # full content (minus frontmatter)
+    content: str  # full raw content (including frontmatter) for embedding/FTS
 
 
 # Wikilinks: [[target]], [[target|display]], [[target#heading]], [[target#heading|display]]
@@ -52,37 +53,29 @@ def parse_note(filepath: str, filename: str) -> ParsedNote:
         filepath: Absolute path to the .md file
         filename: Just the filename (used for title)
     """
-    with open(filepath, encoding="utf-8") as f:
-        post = frontmatter.load(f)
+    raw_content = Path(filepath).read_text(encoding="utf-8")
+    post = frontmatter.loads(raw_content)
 
-    # Title = filename without extension
     title = filename.removesuffix(".md")
-
-    # Aliases from frontmatter (can be string or list)
     aliases = _normalize_list(post.metadata.get("aliases"))
-
-    # Tags from frontmatter
     fm_tags = _normalize_list(post.metadata.get("tags"))
 
-    # Content (without frontmatter)
-    content = post.content
-
-    # Extract tags and wikilinks from content (after stripping code)
-    stripped = strip_code(content)
+    # Extract tags and wikilinks from body (strip code blocks to avoid false matches)
+    stripped = strip_code(post.content)
     content_tags = TAG_PATTERN.findall(stripped)
     wikilinks = WIKILINK_PATTERN.findall(stripped)
 
-    # Combine frontmatter + content tags, dedupe while preserving order
+    # Combine frontmatter + content tags, dedupe
     all_tags = fm_tags + content_tags
-    seen = set()
+    seen: set[str] = set()
     tags = []
     for tag in all_tags:
         if tag not in seen:
             seen.add(tag)
             tags.append(tag)
 
-    # Dedupe wikilinks too
-    seen_links = set()
+    # Dedupe wikilinks
+    seen_links: set[str] = set()
     unique_links = []
     for link in wikilinks:
         if link not in seen_links:
@@ -94,5 +87,5 @@ def parse_note(filepath: str, filename: str) -> ParsedNote:
         aliases=aliases,
         tags=tags,
         wikilinks=unique_links,
-        content=content,
+        content=raw_content,
     )

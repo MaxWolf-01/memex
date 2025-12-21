@@ -28,7 +28,11 @@ mcp = FastMCP(name="memex")
 
 
 def parse_vaults_env() -> dict[str, Path]:
-    """Parse MEMEX_VAULTS env var into {vault_id: path} dict."""
+    """Parse MEMEX_VAULTS env var into {vault_id: path} dict.
+
+    Vault ID is the absolute path string, avoiding collisions when multiple vaults
+    have the same folder name.
+    """
     vaults_env = os.environ.get("MEMEX_VAULTS", "")
     if not vaults_env:
         return {}
@@ -38,7 +42,7 @@ def parse_vaults_env() -> dict[str, Path]:
         if not path_str:
             continue
         path = Path(path_str).expanduser().resolve()
-        vault_id = path.name  # use folder name as ID
+        vault_id = str(path)
         vaults[vault_id] = path
     return vaults
 
@@ -90,7 +94,7 @@ def search(
     vault: str | None = None,
     limit: int = 5,
     concise: bool = False,
-) -> list[dict]:
+) -> dict:
     """Search across markdown vaults using semantic search, optionally boosted by keyword matching.
 
     Semantic search finds conceptually related notes based on meaning. If keywords are provided,
@@ -107,13 +111,17 @@ def search(
                   (e.g., ["MHSA", "softmax", "transformer"])
         vault: Specific vault to search (None = all vaults)
         limit: Maximum number of results to return
-        concise: If True, return only vault/path/title. If False (default), full content.
+        concise: If True, return only paths grouped by vault. If False (default), full content.
+
+    Returns:
+        Results grouped by vault absolute path. Keys are vault paths, values are lists of
+        note paths (concise) or note dicts with path/title/aliases/tags/content (full).
     """
     start_time = time.monotonic()
     vaults = parse_vaults_env()
 
     if not vaults:
-        return [{"error": "No vaults configured. Set MEMEX_VAULTS env var."}]
+        return {"error": "No vaults configured. Set MEMEX_VAULTS env var."}
 
     conn = get_connection()
     index_all_vaults(conn, vaults, on_progress=lambda _: None)
@@ -144,21 +152,25 @@ def search(
     combined = [n for n in combined if n.vault in configured_vault_names]
 
     if not combined:
-        result = [{"message": f"No results for '{query}'", "vaults_searched": list(vaults.keys())}]
+        result: dict = {"message": f"No results for '{query}'", "vaults_searched": list(vaults.keys())}
     elif concise:
-        result = [{"vault": r.vault, "path": r.path, "title": r.title} for r in combined[:limit]]
+        # Group paths by vault for token efficiency
+        grouped: dict[str, list[str]] = {}
+        for r in combined[:limit]:
+            grouped.setdefault(r.vault, []).append(r.path)
+        result = grouped
     else:
-        result = [
-            {
-                "vault": r.vault,
+        # Group full results by vault
+        grouped_full: dict[str, list[dict]] = {}
+        for r in combined[:limit]:
+            grouped_full.setdefault(r.vault, []).append({
                 "path": r.path,
                 "title": r.title,
                 "aliases": r.aliases,
                 "tags": r.tags,
                 "content": r.content,
-            }
-            for r in combined[:limit]
-        ]
+            })
+        result = grouped_full
 
     elapsed = time.monotonic() - start_time
     chars = len(json.dumps(result))
@@ -240,10 +252,17 @@ def explore(
 
     conn.close()
 
+    def format_outlink(target: str, resolved: list[str]) -> dict:
+        if not resolved:
+            return {"target": target, "resolved_path": None}
+        if len(resolved) == 1:
+            return {"target": target, "resolved_path": resolved[0]}
+        return {"target": target, "resolved_paths": resolved}
+
     if concise:
         result = {
             "note": {"vault": note.vault, "path": note.path, "title": note.title},
-            "outlinks": [{"target": t, "resolved_path": None} for t in outlink_targets],
+            "outlinks": [format_outlink(t, r) for t, r in outlink_targets],
             "backlinks": [{"path": p} for p in backlink_paths],
             "similar": [{"path": n.path, "title": n.title, "distance": round(d, 3)} for n, d in similar_notes],
         }
@@ -257,7 +276,7 @@ def explore(
                 "tags": note.tags,
                 "content": note.content,
             },
-            "outlinks": [{"target": t, "resolved_path": None} for t in outlink_targets],
+            "outlinks": [format_outlink(t, r) for t, r in outlink_targets],
             "backlinks": [{"path": p} for p in backlink_paths],
             "similar": [
                 {"vault": n.vault, "path": n.path, "title": n.title, "distance": round(d, 3)}

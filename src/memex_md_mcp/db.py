@@ -270,13 +270,37 @@ def search_fts(conn: sqlite3.Connection, query: str, vault: str | None = None, l
     ]
 
 
-def get_outlinks(conn: sqlite3.Connection, vault: str, path: str) -> list[str]:
-    """Get all wikilink targets from a note (what this note links TO)."""
+def get_outlinks(conn: sqlite3.Connection, vault: str, path: str) -> list[tuple[str, list[str]]]:
+    """Get all wikilink targets from a note (what this note links TO).
+
+    Returns list of (target_raw, resolved_paths) tuples.
+    resolved_paths is a list of matching note paths (can be empty if unresolved,
+    or multiple if case-insensitive matching finds duplicates like "Foo" and "foo").
+    """
     rows = conn.execute(
         "SELECT target_raw FROM wikilinks WHERE source_vault = ? AND source_path = ?",
         (vault, path),
     ).fetchall()
-    return [row["target_raw"] for row in rows]
+
+    results = []
+    for row in rows:
+        target = row["target_raw"]
+        resolved = resolve_wikilink(conn, vault, target)
+        results.append((target, resolved))
+    return results
+
+
+def resolve_wikilink(conn: sqlite3.Connection, vault: str, target: str) -> list[str]:
+    """Resolve a wikilink target to note path(s).
+
+    Matches against note title (case-insensitive). Returns all matching paths
+    in case of duplicates (e.g., "Attention.md" and "attention.md" both exist).
+    """
+    rows = conn.execute(
+        "SELECT path FROM notes WHERE vault = ? AND LOWER(title) = LOWER(?)",
+        (vault, target),
+    ).fetchall()
+    return [row["path"] for row in rows]
 
 
 def get_backlinks(conn: sqlite3.Connection, vault: str, note_name: str) -> list[str]:

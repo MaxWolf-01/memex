@@ -12,7 +12,9 @@ from memex_md_mcp.db import (
     get_indexed_mtimes,
     get_note,
     get_note_rowid,
+    get_outlinks,
     init_db,
+    resolve_wikilink,
     search_fts,
     search_semantic,
     upsert_embedding,
@@ -243,3 +245,86 @@ class TestGetIndexedMtimes:
         mtimes = get_indexed_mtimes(conn, "vault1")
 
         assert mtimes == {"note1.md": 1000.0, "note2.md": 2000.0}
+
+
+class TestWikilinkResolution:
+    def test_resolve_by_title(self, conn):
+        note = ParsedNote(
+            title="softmax",
+            aliases=[],
+            tags=[],
+            wikilinks=[],
+            content="Softmax function.",
+        )
+        upsert_note(conn, "vault1", "general/softmax.md", note, 1000.0, "h1")
+
+        resolved = resolve_wikilink(conn, "vault1", "softmax")
+
+        assert resolved == ["general/softmax.md"]
+
+    def test_resolve_case_insensitive(self, conn):
+        note = ParsedNote(
+            title="Attention",
+            aliases=[],
+            tags=[],
+            wikilinks=[],
+            content="Attention mechanism.",
+        )
+        upsert_note(conn, "vault1", "attention.md", note, 1000.0, "h1")
+
+        # lowercase query should match uppercase title
+        resolved = resolve_wikilink(conn, "vault1", "attention")
+
+        assert resolved == ["attention.md"]
+
+    def test_resolve_multiple_matches(self, conn):
+        # Two notes with same title but different case
+        note1 = ParsedNote(title="Foo", aliases=[], tags=[], wikilinks=[], content="Uppercase.")
+        note2 = ParsedNote(title="foo", aliases=[], tags=[], wikilinks=[], content="Lowercase.")
+        upsert_note(conn, "vault1", "dir1/Foo.md", note1, 1000.0, "h1")
+        upsert_note(conn, "vault1", "dir2/foo.md", note2, 1000.0, "h2")
+
+        resolved = resolve_wikilink(conn, "vault1", "foo")
+
+        assert len(resolved) == 2
+        assert set(resolved) == {"dir1/Foo.md", "dir2/foo.md"}
+
+    def test_resolve_unresolved_link(self, conn, sample_note):
+        upsert_note(conn, "vault1", "note.md", sample_note, 1000.0, "h1")
+
+        resolved = resolve_wikilink(conn, "vault1", "nonexistent")
+
+        assert resolved == []
+
+    def test_resolve_vault_scoped(self, conn):
+        note = ParsedNote(title="shared", aliases=[], tags=[], wikilinks=[], content="Content.")
+        upsert_note(conn, "vault1", "shared.md", note, 1000.0, "h1")
+        upsert_note(conn, "vault2", "shared.md", note, 1000.0, "h2")
+
+        # Should only find in specified vault
+        resolved = resolve_wikilink(conn, "vault1", "shared")
+
+        assert resolved == ["shared.md"]
+
+    def test_get_outlinks_with_resolution(self, conn):
+        # Create target notes
+        target = ParsedNote(title="target", aliases=[], tags=[], wikilinks=[], content="Target.")
+        upsert_note(conn, "vault1", "target.md", target, 1000.0, "h1")
+
+        # Create source note with wikilinks
+        source = ParsedNote(
+            title="source",
+            aliases=[],
+            tags=[],
+            wikilinks=["target", "missing"],
+            content="Links to [[target]] and [[missing]].",
+        )
+        upsert_note(conn, "vault1", "source.md", source, 1000.0, "h2")
+
+        outlinks = get_outlinks(conn, "vault1", "source.md")
+
+        assert len(outlinks) == 2
+        # First link should resolve
+        assert ("target", ["target.md"]) in outlinks
+        # Second link should be unresolved
+        assert ("missing", []) in outlinks
