@@ -106,7 +106,9 @@ def index_vault(
 
             rowid = get_note_rowid(conn, vault_id, rel_path)
             if rowid is not None:
-                embedding = embed_text(note.content)
+                # Include title in embedding to handle empty notes and improve single-keyword queries; "#" might be more in-distribution for title, haven't benchmarked
+                text_to_embed = f"# {note.title}\n{note.content}"
+                embedding = embed_text(text_to_embed)
                 upsert_embedding(conn, rowid, embedding)
 
             if rel_path in new_paths:

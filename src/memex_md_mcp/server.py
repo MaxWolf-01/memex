@@ -43,22 +43,68 @@ def parse_vaults_env() -> dict[str, Path]:
     return vaults
 
 
+def sanitize_for_fts(keywords: list[str]) -> str:
+    """Sanitize keywords for FTS5 query. Strips problematic punctuation."""
+    sanitized = []
+    for kw in keywords:
+        # Replace hyphens with space, remove apostrophes and other problematic chars
+        clean = kw.replace("-", " ").replace("'", "").replace('"', "")
+        # Keep only alphanumeric and spaces
+        clean = "".join(c if c.isalnum() or c.isspace() else " " for c in clean)
+        clean = " ".join(clean.split())  # normalize whitespace
+        if clean:
+            sanitized.append(clean)
+    return " ".join(sanitized)
+
+
+def rrf_fusion(
+    semantic_results: list[tuple[IndexedNote, float]],
+    fts_results: list[IndexedNote],
+    k: int = 20,
+) -> list[IndexedNote]:
+    """Reciprocal Rank Fusion of semantic and FTS results."""
+    scores: dict[tuple[str, str], float] = {}
+    notes: dict[tuple[str, str], IndexedNote] = {}
+
+    # Score semantic results by rank
+    for rank, (note, _distance) in enumerate(semantic_results):
+        key = (note.vault, note.path)
+        scores[key] = scores.get(key, 0) + 1 / (k + rank + 1)
+        notes[key] = note
+
+    # Score FTS results by rank
+    for rank, note in enumerate(fts_results):
+        key = (note.vault, note.path)
+        scores[key] = scores.get(key, 0) + 1 / (k + rank + 1)
+        notes[key] = note
+
+    # Sort by combined score (descending)
+    sorted_keys = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
+    return [notes[key] for key in sorted_keys]
+
+
 @mcp.tool()
 def search(
     query: str,
+    keywords: list[str] | None = None,
     vault: str | None = None,
     limit: int = 5,
     concise: bool = False,
 ) -> list[dict]:
-    """Search across markdown vaults using semantic + full-text search.
+    """Search across markdown vaults using semantic search, optionally boosted by keyword matching.
 
-    Use this to find notes when you don't know exact names or want conceptual matches.
-    Combines keyword matching (FTS) with semantic similarity.
+    Semantic search finds conceptually related notes based on meaning. If keywords are provided,
+    full-text search results are fused in using RRF (Reciprocal Rank Fusion) to boost notes
+    containing those exact terms.
 
     Args:
-        query: Search query - can be keywords or natural language
-               (e.g., "terraform state locking", "auth system architecture decisions",
-               "error handling preferences for this project")
+        query: Describe what you're looking for in natural language. Longer descriptions
+               work better - one to three sentences, or even paragraphs for complex topics.
+               (e.g., "how the attention mechanism works in transformers",
+               "architecture decisions for authentication in this project")
+        keywords: Optional list of exact terms to match. Use for specific names, acronyms,
+                  or technical terms. Notes containing these get boosted in results.
+                  (e.g., ["MHSA", "softmax", "transformer"])
         vault: Specific vault to search (None = all vaults)
         limit: Maximum number of results to return
         concise: If True, return only vault/path/title. If False (default), full content.
@@ -72,27 +118,27 @@ def search(
     conn = get_connection()
     index_all_vaults(conn, vaults, on_progress=lambda _: None)
 
-    fts_results = search_fts(conn, query, vault=vault, limit=limit)
-
+    # Semantic search (always runs)
     query_embedding = embed_text(query)
     semantic_results = search_semantic(conn, query_embedding, vault=vault, limit=limit)
 
+    # FTS search (only if keywords provided)
+    fts_results: list[IndexedNote] = []
+    if keywords:
+        fts_query = sanitize_for_fts(keywords)
+        if fts_query:
+            try:
+                fts_results = search_fts(conn, fts_query, vault=vault, limit=limit)
+            except Exception as e:
+                log.warning("FTS search failed for keywords %s: %s", keywords, e)
+
     conn.close()
 
-    seen: set[tuple[str, str]] = set()
-    combined: list[IndexedNote] = []
-
-    for note in fts_results:
-        key = (note.vault, note.path)
-        if key not in seen:
-            seen.add(key)
-            combined.append(note)
-
-    for note, _distance in semantic_results:
-        key = (note.vault, note.path)
-        if key not in seen:
-            seen.add(key)
-            combined.append(note)
+    # Combine results
+    if fts_results:
+        combined = rrf_fusion(semantic_results, fts_results, k=20)
+    else:
+        combined = [note for note, _dist in semantic_results]
 
     configured_vault_names = set(vaults.keys())
     combined = [n for n in combined if n.vault in configured_vault_names]
@@ -117,8 +163,9 @@ def search(
     elapsed = time.monotonic() - start_time
     chars = len(json.dumps(result))
     log.info(
-        'search(query="%s", vault=%s, limit=%d) -> %d results, ~%d chars (~%d tokens) in %.2fs',
+        'search(query="%s", keywords=%s, vault=%s, limit=%d) -> %d results, ~%d chars (~%d tokens) in %.2fs',
         query[:50],
+        keywords,
         vault,
         limit,
         len(result),
