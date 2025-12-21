@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,7 +10,10 @@ from sqlite3 import Connection
 
 from memex_md_mcp.db import delete_note, get_indexed_mtimes, get_note_rowid, init_db, upsert_embedding, upsert_note
 from memex_md_mcp.embeddings import embed_text
+from memex_md_mcp.logging import get_logger
 from memex_md_mcp.parser import parse_note
+
+log = get_logger()
 
 
 @dataclass
@@ -36,9 +40,13 @@ def content_hash(content: str) -> str:
 
 
 def discover_files(vault_path: Path) -> dict[str, float]:
-    """Find all .md files in vault, return {relative_path: mtime}."""
+    """Find all .md files in vault, return {relative_path: mtime}.
+
+    Excludes hidden directories (starting with '.') like .obsidian, .trash, .git.
+    """
     files = {}
-    for root, _, filenames in os.walk(vault_path):
+    for root, dirs, filenames in os.walk(vault_path):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
         for filename in filenames:
             if not filename.endswith(".md"):
                 continue
@@ -62,6 +70,7 @@ def index_vault(
         vault_path: Absolute path to vault directory
         on_progress: Optional callback for progress messages
     """
+    start_time = time.monotonic()
     stats = IndexStats()
 
     disk_files = discover_files(vault_path)
@@ -107,6 +116,7 @@ def index_vault(
 
         except Exception as e:
             stats.errors.append(f"{rel_path}: {e}")
+            log.error("Index error in '%s': %s: %s", vault_id, rel_path, e)
 
         # Progress every ~10% for large vaults
         if on_progress and total >= 10 and (i + 1) % max(1, total // 10) == 0:
@@ -116,6 +126,18 @@ def index_vault(
     for rel_path in deleted_paths:
         delete_note(conn, vault_id, rel_path)
         stats.deleted += 1
+
+    elapsed = time.monotonic() - start_time
+    if stats.total_processed > 0:
+        log.info(
+            "Indexed '%s': +%d new, ~%d updated, -%d deleted (%d total) in %.2fs",
+            vault_id,
+            stats.added,
+            stats.updated,
+            stats.deleted,
+            stats.total_in_vault,
+            elapsed,
+        )
 
     return stats
 

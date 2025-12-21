@@ -1,6 +1,6 @@
 You like Obsidian? Your LLM will love it too.
 
-# memex-md-mcp
+# memex-md-mcp (WIP!)
 
 MCP server for semantic search over markdown vaults. Hybrid FTS5 + embeddings search, wikilink graph traversal, and YAML frontmatter awareness (aliases, tags).
 
@@ -14,40 +14,24 @@ Then ask Claude to help configure your vaults - it has `mcp_info()` which explai
 
 ## What This Does
 
-Memex gives Claude read access to your markdown vaults. It creates a local index at `~/.local/share/memex-md-mcp/memex.db` containing:
+Memex gives Claude read access to your markdown vaults. It creates a local index at `~/.local/share/memex-md-mcp/memex.db` and logs to `~/.local/share/memex-md-mcp/memex.log`. The index contains:
 
 - Full-text search index (FTS5) for keyword matching
 - Embeddings (google/embeddinggemma-300m) for semantic similarity
 - Wikilink graph for backlink queries
 - Extracted frontmatter (aliases, tags)
 
-On each query, memex checks file mtimes and re-indexes any changed files. First run on a large vault takes time to compute embeddings.
+On each query, memex checks file mtimes and re-indexes any changed files.
+
+**Note:** Initial indexing of large vaults can take several minutes (embedding computation). Subsequent queries only re-index changed files and are fast.
+
+Hidden directories (`.obsidian`, `.trash`, `.git`, etc.) are excluded from indexing.
 
 Writing to notes happens through Claude Code's normal file tools. 
 
 ## Configuration
 
-### Global vault (always available)
-
-In `~/.claude/settings.json`:
-
-```json
-{
-  "env": {
-    "MEMEX_VAULTS": "/home/user/obsidian/knowledge"
-  },
-  "mcpServers": {
-    "memex": {
-      "command": "uvx",
-      "args": ["memex-md-mcp@latest"]
-    }
-  }
-}
-```
-
-### Adding project-specific vaults
-
-In your project's `.mcp.json`, use variable expansion to append to global vaults:
+Add to `~/.claude/mcp.json` (global) or `.mcp.json` (per-project):
 
 ```json
 {
@@ -56,14 +40,14 @@ In your project's `.mcp.json`, use variable expansion to append to global vaults
       "command": "uvx",
       "args": ["memex-md-mcp@latest"],
       "env": {
-        "MEMEX_VAULTS": "${MEMEX_VAULTS}:/home/user/projects/myproject/docs"
+        "MEMEX_VAULTS": "/home/user/knowledge:/home/user/project/docs"
       }
     }
   }
 }
 ```
 
-This keeps your global vault active while adding project-specific ones.
+Multiple vault paths are colon-separated. Project `.mcp.json` **overrides** global config entirely (no merging), so list all vaults you need.
 
 ## Tools
 

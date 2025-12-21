@@ -1,10 +1,11 @@
 """MCP server for semantic search over markdown vaults."""
 
+import json
 import os
 from importlib.metadata import metadata
 from pathlib import Path
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp import FastMCP
 
 from memex_md_mcp.db import (
     IndexedNote,
@@ -18,11 +19,11 @@ from memex_md_mcp.db import (
 )
 from memex_md_mcp.embeddings import embed_text
 from memex_md_mcp.indexer import index_all_vaults
+from memex_md_mcp.logging import get_logger
 
-mcp = FastMCP(
-    name="memex",
-    instructions="Semantic search over markdown vaults. Use the search tool to find relevant notes.",
-)
+log = get_logger()
+
+mcp = FastMCP(name="memex")
 
 
 def parse_vaults_env() -> dict[str, Path]:
@@ -42,12 +43,11 @@ def parse_vaults_env() -> dict[str, Path]:
 
 
 @mcp.tool()
-async def search(
+def search(
     query: str,
     vault: str | None = None,
     limit: int = 5,
     concise: bool = False,
-    ctx: Context | None = None,
 ) -> list[dict]:
     """Search across markdown vaults using semantic + full-text search.
 
@@ -68,18 +68,7 @@ async def search(
         return [{"error": "No vaults configured. Set MEMEX_VAULTS env var."}]
 
     conn = get_connection()
-
-    async def log(msg: str) -> None:
-        if ctx:
-            await ctx.info(msg)
-
-    await log(f"Checking index for {len(vaults)} vault(s)...")
-    stats = index_all_vaults(conn, vaults, on_progress=lambda _: None)
-
-    total_indexed = sum(s.total_in_vault for s in stats.values())
-    total_changed = sum(s.total_processed for s in stats.values())
-    if total_changed > 0:
-        await log(f"Indexed {total_changed} changed files ({total_indexed} total)")
+    index_all_vaults(conn, vaults, on_progress=lambda _: None)
 
     fts_results = search_fts(conn, query, vault=vault, limit=limit)
 
@@ -107,25 +96,33 @@ async def search(
     combined = [n for n in combined if n.vault in configured_vault_names]
 
     if not combined:
-        return [{"message": f"No results for '{query}'", "vaults_searched": list(vaults.keys())}]
-
-    if concise:
-        return [
-            {"vault": r.vault, "path": r.path, "title": r.title}
+        result = [{"message": f"No results for '{query}'", "vaults_searched": list(vaults.keys())}]
+    elif concise:
+        result = [{"vault": r.vault, "path": r.path, "title": r.title} for r in combined[:limit]]
+    else:
+        result = [
+            {
+                "vault": r.vault,
+                "path": r.path,
+                "title": r.title,
+                "aliases": r.aliases,
+                "tags": r.tags,
+                "content": r.content,
+            }
             for r in combined[:limit]
         ]
 
-    return [
-        {
-            "vault": r.vault,
-            "path": r.path,
-            "title": r.title,
-            "aliases": r.aliases,
-            "tags": r.tags,
-            "content": r.content,
-        }
-        for r in combined[:limit]
-    ]
+    chars = len(json.dumps(result))
+    log.info(
+        'search(query="%s", vault=%s, limit=%d) -> %d results, ~%d chars (~%d tokens)',
+        query[:50],
+        vault,
+        limit,
+        len(result),
+        chars,
+        chars // 4,
+    )
+    return result
 
 
 def path_to_note_name(path: str) -> str:
@@ -134,11 +131,10 @@ def path_to_note_name(path: str) -> str:
 
 
 @mcp.tool()
-async def explore(
+def explore(
     note_path: str,
     vault: str,
     concise: bool = False,
-    ctx: Context | None = None,
 ) -> dict:
     """Explore the neighborhood of a specific note.
 
@@ -167,12 +163,6 @@ async def explore(
         return {"error": f"Vault '{vault}' not found. Available: {list(vaults.keys())}"}
 
     conn = get_connection()
-
-    async def log(msg: str) -> None:
-        if ctx:
-            await ctx.info(msg)
-
-    await log(f"Checking index for vault '{vault}'...")
     index_all_vaults(conn, {vault: vaults[vault]}, on_progress=lambda _: None)
 
     note = get_note(conn, vault, note_path)
@@ -199,29 +189,42 @@ async def explore(
     conn.close()
 
     if concise:
-        return {
+        result = {
             "note": {"vault": note.vault, "path": note.path, "title": note.title},
             "outlinks": [{"target": t, "resolved_path": None} for t in outlink_targets],
             "backlinks": [{"path": p} for p in backlink_paths],
             "similar": [{"path": n.path, "title": n.title, "distance": round(d, 3)} for n, d in similar_notes],
         }
+    else:
+        result = {
+            "note": {
+                "vault": note.vault,
+                "path": note.path,
+                "title": note.title,
+                "aliases": note.aliases,
+                "tags": note.tags,
+                "content": note.content,
+            },
+            "outlinks": [{"target": t, "resolved_path": None} for t in outlink_targets],
+            "backlinks": [{"path": p} for p in backlink_paths],
+            "similar": [
+                {"vault": n.vault, "path": n.path, "title": n.title, "distance": round(d, 3)}
+                for n, d in similar_notes
+            ],
+        }
 
-    return {
-        "note": {
-            "vault": note.vault,
-            "path": note.path,
-            "title": note.title,
-            "aliases": note.aliases,
-            "tags": note.tags,
-            "content": note.content,
-        },
-        "outlinks": [{"target": t, "resolved_path": None} for t in outlink_targets],
-        "backlinks": [{"path": p} for p in backlink_paths],
-        "similar": [
-            {"vault": n.vault, "path": n.path, "title": n.title, "distance": round(d, 3)}
-            for n, d in similar_notes
-        ],
-    }
+    chars = len(json.dumps(result))
+    log.info(
+        'explore(path="%s", vault="%s") -> outlinks=%d, backlinks=%d, similar=%d, ~%d chars (~%d tokens)',
+        note_path,
+        vault,
+        len(outlink_targets),
+        len(backlink_paths),
+        len(similar_notes),
+        chars,
+        chars // 4,
+    )
+    return result
 
 
 @mcp.tool()
