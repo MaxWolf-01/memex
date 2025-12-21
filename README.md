@@ -23,7 +23,7 @@ Memex gives Claude read access to your markdown vaults. It creates a local index
 
 On each query, memex checks file mtimes and re-indexes any changed files.
 
-**Note:** Initial indexing of large vaults can take several minutes (embedding computation). Subsequent queries only re-index changed files and are fast.
+**Note:** Initial indexing requires embedding computation. Example: ~3800 notes took ~7 minutes on an RTX 3070 Ti. Subsequent queries only re-index changed files and are fast.
 
 Hidden directories (`.obsidian`, `.trash`, `.git`, etc.) are excluded from indexing.
 

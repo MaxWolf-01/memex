@@ -1,6 +1,7 @@
 """File-based logging for memex."""
 
 import logging
+from importlib.metadata import version
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -27,5 +28,7 @@ def get_logger() -> logging.Logger:
     )
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-5s %(message)s"))
     logger.addHandler(handler)
+
+    logger.info("memex v%s started", version("memex-md-mcp"))
 
     return logger

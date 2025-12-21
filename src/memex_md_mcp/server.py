@@ -2,6 +2,7 @@
 
 import json
 import os
+import time
 from importlib.metadata import metadata
 from pathlib import Path
 
@@ -62,6 +63,7 @@ def search(
         limit: Maximum number of results to return
         concise: If True, return only vault/path/title. If False (default), full content.
     """
+    start_time = time.monotonic()
     vaults = parse_vaults_env()
 
     if not vaults:
@@ -112,15 +114,17 @@ def search(
             for r in combined[:limit]
         ]
 
+    elapsed = time.monotonic() - start_time
     chars = len(json.dumps(result))
     log.info(
-        'search(query="%s", vault=%s, limit=%d) -> %d results, ~%d chars (~%d tokens)',
+        'search(query="%s", vault=%s, limit=%d) -> %d results, ~%d chars (~%d tokens) in %.2fs',
         query[:50],
         vault,
         limit,
         len(result),
         chars,
         chars // 4,
+        elapsed,
     )
     return result
 
@@ -155,6 +159,7 @@ def explore(
         concise: If True, return only paths/titles for linked notes (no full content).
                  If False (default), include full content for the main note.
     """
+    start_time = time.monotonic()
     vaults = parse_vaults_env()
     if not vaults:
         return {"error": "No vaults configured. Set MEMEX_VAULTS env var."}
@@ -213,9 +218,10 @@ def explore(
             ],
         }
 
+    elapsed = time.monotonic() - start_time
     chars = len(json.dumps(result))
     log.info(
-        'explore(path="%s", vault="%s") -> outlinks=%d, backlinks=%d, similar=%d, ~%d chars (~%d tokens)',
+        'explore(path="%s", vault="%s") -> outlinks=%d, backlinks=%d, similar=%d, ~%d chars (~%d tokens) in %.2fs',
         note_path,
         vault,
         len(outlink_targets),
@@ -223,6 +229,7 @@ def explore(
         len(similar_notes),
         chars,
         chars // 4,
+        elapsed,
     )
     return result
 
