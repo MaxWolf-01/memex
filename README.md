@@ -53,14 +53,16 @@ Multiple vault paths are colon-separated. Project `.mcp.json` **overrides** glob
 
 ## Tools
 
-**search(query, keywords?, vault?, limit=5, concise=False)** — semantic search over vaults.
+**search(query?, keywords?, vault?, limit=5, page=1, concise=False)** — semantic search over vaults.
 
-- `query`: Describe what you're looking for in natural language. Longer descriptions (1-3 sentences, even paragraphs) work better than keywords.
-- `keywords`: Optional list of exact terms to boost. Notes containing these get ranked higher.
+- `query`: Describe what you're looking for in natural language. Use 1-3 sentences, question format works well. If omitted, runs FTS-only mode with keywords.
+- `keywords`: Optional list of exact terms to boost. Required if query is omitted.
+- `page`: Page number for pagination (1-indexed).
 
 ```
-search("how the attention mechanism computes weighted sums of values")
-search("past debugging attempts for the auth flow", keywords=["OAuth", "redirect"])
+search("What authentication approach did we decide on? I remember we discussed OAuth.")
+search("How does the caching layer handle invalidation?", keywords=["Redis", "TTL"])
+search(keywords=["PostgreSQL"])  # FTS-only mode
 ```
 
 **explore(note_path, vault, concise=False)** — graph traversal from a note.
@@ -68,7 +70,7 @@ search("past debugging attempts for the auth flow", keywords=["OAuth", "redirect
 Returns outlinks (what it references), backlinks (what references it), and semantically similar notes not yet linked. Outlinks include image embeds (`![[image.png]]`)—use Read tool to view them.
 
 ```
-explore("architecture/api-design.md", "work")
+explore("architecture/api-design.md", "/home/user/project/docs")
 ```
 
 **mcp_info()** — returns this README.
@@ -76,32 +78,27 @@ explore("architecture/api-design.md", "work")
 
 ## Workflow Integration
 
-(From my own workflow) I recommend the following instructions per vault in your project's `CLAUDE.md`, adapted as needed:
+Add to your project's `CLAUDE.md` (adapt paths to your setup):
 
+```markdown
+# Memex MCP
+
+You have access to markdown vaults via memex. Use them to find past work, discover connections, and document knowledge that helps future sessions.
+
+Vaults:
+- /home/max/repos/github/MaxWolf-01/claude-global-knowledge — Your global knowledge: cross-project learnings, user preferences, workflow insights
+- ./agent/knowledge — Project-specific: architecture decisions, conventions, debugging patterns
+
+Search tips:
+- Use 1-3 sentence questions, not keywords: "How does the auth flow handle token refresh?" beats "auth token refresh"
+- Mention key terms explicitly in your query
+- For exact term lookup, use keywords parameter with a focused query
+- For precise "find this exact file/string" needs, use grep/rg instead — memex is for exploration
+
+Workflow: Search to find entry points → Explore to follow connections (outlinks, backlinks, similar notes) → Build context before implementation.
 ```
-<memex_mcp_instructions>
-Memex MCP Instructions
 
-You are equipped with the following knowledge-bases "vaults":
-- /home/max/repos/github/MaxWolf-01/claude-global-knowledge # Your global knowledge about yourself, me, us/how we work together, general knowledge that transcends specific projects.
-- /home/max/repos/obsidian/knowledge-base # My personal knowledge base in Obsidian format. Contains ~everything about me, my work, my interests, my projects, my knowledge, my life.
-
-# TODO quickly describe what this MCP is, and when to use each vault (when to read, when to write)?
-</memex_mcp_instructions>
-```
-
-In addition, the below commands heavily leverage memex to allow claude to let Claude work in a more autonomous, highly parallel/threaded (multiclauded), yet reliable way & easy to verify manner, and document its work in a scalable way:
-
-<details>
-<summary><h4>Example Workflow</h4></summary>
-
-~~Template for integrating memex into your project's CLAUDE.md instructions:~~ Link to slash commands in repo instead? Or put both here in two code blocks?
-
-~~~markdown
-## Knowledge Base (memex MCP)
-
-
-</details>
+For structured task management and knowledge archiving that leverage memex, see [`/task`](https://github.com/MaxWolf-01/dotfiles/blob/master/claude/commands/task.md) and [`/archive`](https://github.com/MaxWolf-01/dotfiles/blob/master/claude/commands/archive.md) — example workflows for autonomous, parallel (multi-clauded), yet reliable and verifiable work.
 
 ## Benchmarks
 
@@ -133,5 +130,4 @@ make release # bumps minor version, builds and publishes to pypi with new tag
 - [ ] Include workflow examples as skills? Currently I use them as slash commands. Claude 5/6 might be autonomous enough to apply them directly, and grow a memex vault largely unsupervised. 
    - Actually, a step towards that will probably be agents managing other agents with this workflow.
    - Also see https://github.com/anthropics/claude-code/issues/13115
-
 

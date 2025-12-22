@@ -89,10 +89,11 @@ def rrf_fusion(
 
 @mcp.tool()
 def search(
-    query: str,
+    query: str | None = None,
     keywords: list[str] | None = None,
     vault: str | None = None,
     limit: int = 5,
+    page: int = 1,
     concise: bool = False,
 ) -> dict:
     """Search across markdown vaults using semantic search, optionally boosted by keyword matching.
@@ -102,15 +103,17 @@ def search(
     containing those exact terms.
 
     Args:
-        query: Describe what you're looking for in natural language. Longer descriptions
-               work better - one to three sentences, or even paragraphs for complex topics.
-               (e.g., "how the attention mechanism works in transformers",
-               "architecture decisions for authentication in this project")
+        query: Describe what you're looking for in natural language. Use 1-3 sentences for best
+               results. Question format works well ("What...?", "How did we...?").
+               If None, runs FTS-only mode using keywords (useful for exact term lookup).
+               (e.g., "What authentication approach did we decide on? I remember we discussed OAuth vs sessions.")
         keywords: Optional list of exact terms to match. Use for specific names, acronyms,
                   or technical terms. Notes containing these get boosted in results.
-                  (e.g., ["MHSA", "softmax", "transformer"])
+                  Required if query is None.
+                  (e.g., ["OAuth", "JWT", "session"])
         vault: Specific vault to search (None = all vaults)
-        limit: Maximum number of results to return
+        limit: Maximum number of results per page
+        page: Page number (1-indexed). Use to get more results beyond the first page.
         concise: If True, return only paths grouped by vault. If False (default), full content.
 
     Returns:
@@ -123,12 +126,20 @@ def search(
     if not vaults:
         return {"error": "No vaults configured. Set MEMEX_VAULTS env var."}
 
+    if not query and not keywords:
+        return {"error": "Provide query (semantic search) or keywords (FTS), or both."}
+
     conn = get_connection()
     index_all_vaults(conn, vaults, on_progress=lambda _: None)
 
-    # Semantic search (always runs)
-    query_embedding = embed_text(query)
-    semantic_results = search_semantic(conn, query_embedding, vault=vault, limit=limit)
+    # Fetch enough results to cover requested page
+    fetch_limit = page * limit
+
+    # Semantic search (only if query provided)
+    semantic_results: list[tuple[IndexedNote, float]] = []
+    if query:
+        query_embedding = embed_text(query)
+        semantic_results = search_semantic(conn, query_embedding, vault=vault, limit=fetch_limit)
 
     # FTS search (only if keywords provided)
     fts_results: list[IndexedNote] = []
@@ -136,33 +147,40 @@ def search(
         fts_query = sanitize_for_fts(keywords)
         if fts_query:
             try:
-                fts_results = search_fts(conn, fts_query, vault=vault, limit=limit)
+                fts_results = search_fts(conn, fts_query, vault=vault, limit=fetch_limit)
             except Exception as e:
                 log.warning("FTS search failed for keywords %s: %s", keywords, e)
 
     conn.close()
 
     # Combine results
-    if fts_results:
+    if semantic_results and fts_results:
         combined = rrf_fusion(semantic_results, fts_results, k=20)
-    else:
+    elif semantic_results:
         combined = [note for note, _dist in semantic_results]
+    else:
+        combined = fts_results
 
     configured_vault_names = set(vaults.keys())
     combined = [n for n in combined if n.vault in configured_vault_names]
 
-    if not combined:
-        result: dict = {"message": f"No results for '{query}'", "vaults_searched": list(vaults.keys())}
+    # Paginate
+    offset = (page - 1) * limit
+    page_results = combined[offset : offset + limit]
+
+    search_desc = query if query else f"keywords={keywords}"
+    if not page_results:
+        result: dict = {"message": f"No results for '{search_desc}' (page {page})", "vaults_searched": list(vaults.keys())}
     elif concise:
         # Group paths by vault for token efficiency
         grouped: dict[str, list[str]] = {}
-        for r in combined[:limit]:
+        for r in page_results:
             grouped.setdefault(r.vault, []).append(r.path)
         result = grouped
     else:
         # Group full results by vault
         grouped_full: dict[str, list[dict]] = {}
-        for r in combined[:limit]:
+        for r in page_results:
             grouped_full.setdefault(r.vault, []).append({
                 "path": r.path,
                 "title": r.title,
@@ -175,12 +193,13 @@ def search(
     elapsed = time.monotonic() - start_time
     chars = len(json.dumps(result))
     log.info(
-        'search(query="%s", keywords=%s, vault=%s, limit=%d) -> %d results, ~%d chars (~%d tokens) in %.2fs',
-        query[:50],
+        'search(query="%s", keywords=%s, vault=%s, limit=%d, page=%d) -> %d results, ~%d chars (~%d tokens) in %.2fs',
+        query,
         keywords,
         vault,
         limit,
-        len(result),
+        page,
+        len(page_results),
         chars,
         chars // 4,
         elapsed,
