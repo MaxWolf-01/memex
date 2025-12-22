@@ -87,7 +87,7 @@ You have access to markdown vaults via memex. Use them to find past work, discov
 
 Vaults:
 - /home/max/repos/github/MaxWolf-01/claude-global-knowledge — Your global knowledge: cross-project learnings, user preferences, workflow insights
-- ./agent/knowledge — Project-specific: architecture decisions, conventions, debugging patterns
+- ./agent — /{knowledge, tasks} Project-specific: architecture decisions, conventions, debugging patterns, task files
 
 Search tips:
 - Use 1-3 sentence questions, not keywords: "How does the auth flow handle token refresh?" beats "auth token refresh"

@@ -25,54 +25,48 @@ Improve memex search quality and usability based on evaluation findings:
 
 ## Current State
 
-Just completed in this session:
-- Wikilink resolution now works (title match, case-insensitive)
-- Vault ID uses absolute path (fixes collision bug)
-- Content includes frontmatter for embedding/FTS
-- Logging shows cwd and vaults on startup
-- Search results grouped by vault absolute path
+**All main goals completed.** Ready for release.
 
-Commits ready (not yet released):
+Commits:
 - `aad243c` - Fix wikilink resolution, vault ID collision, include frontmatter
 - `fe0ecdf` - Log cwd and vaults on startup
+- `a51e0d0` - Add optional query, pagination, and improve tool descriptions
 
-## Next Steps
+## Completed
 
-### Priority 1: Empty Query Fix
-- [ ] Make `query` parameter optional (or allow empty string to skip semantic)
-- [ ] When query is empty/None and keywords provided: run FTS-only
-- [ ] Update tool description to clarify this mode
+### Priority 1: Empty Query Fix ✓
+- [x] Make `query` parameter optional (`str | None = None`)
+- [x] When query is None and keywords provided: run FTS-only
+- [x] Update tool description to clarify this mode
 
-### Priority 2: Pagination for Search
-- [ ] Add `page` parameter (default 1)
-- [ ] Offset calculation: `offset = (page - 1) * limit`
-- [ ] Check MCP docs for pagination patterns (spec files in repo)
+### Priority 2: Pagination for Search ✓
+- [x] Add `page` parameter (default 1, 1-indexed)
+- [x] Offset calculation: `offset = (page - 1) * limit`
+- [x] Checked MCP docs - uses cursor-based, but page simpler for our stateless search
 
-### Priority 3: Tool Description Improvements
-- [ ] Emphasize 1-3 sentences as ideal query length
-- [ ] Recommend question format ("What is...?", "How does...?")
-- [ ] Note that mentioning target terms explicitly helps
-- [ ] Clarify keywords param is for exact term boosting when query doesn't contain them
-- [ ] Warn that single-word semantic queries are unreliable
+### Priority 3: Tool Description Improvements ✓
+- [x] Emphasize 1-3 sentences as ideal query length
+- [x] Recommend question format ("What...?", "How did we...?")
+- [x] Realistic examples in docstring
+- [x] Clarify keywords param for exact term boosting
 
-### Priority 5: README Workflow Guidance
-- [ ] Document the search → explore workflow pattern
-- [ ] Note that long notes are hard to find (embedding dilution in semantic, keyword noise in FTS)
-- [ ] Recommend: semantic search to find entry points, then explore to follow connections
-- [ ] Position tools as exploratory/connection-making, not precise lookup
-- [ ] For precise lookup, standard bash tools (grep, rg) are better
-- [ ] Finish the example CLAUDE.md prompt section with these hints
+### Priority 5: README Workflow Guidance ✓
+- [x] Document the search → explore workflow pattern
+- [x] Search tips in example CLAUDE.md section
+- [x] Position tools as exploratory/connection-making
 
-### Priority 4: Explore Pagination (maybe)
+## Remaining (Lower Priority)
+
+### Explore Pagination (maybe)
 - [ ] Consider paging similar notes only
 - [ ] Keep outlinks/backlinks complete (just paths, not expensive)
 - [ ] Test performance impact of fetching more similar notes
 
-## Open Questions
+## Resolved Questions
 
-1. For pagination, should we return total count? (Enables "page 2 of 5" UI but adds query cost)
-2. Should `query` be `str | None` (optional) or allow empty string to trigger FTS-only mode?
-3. The v1/v2 in logs - probably from tests using short vault names, but worth confirming
+1. Pagination: No total count (adds complexity, marginal benefit)
+2. Query optional: `str | None` (explicit > implicit)
+3. v1/v2 in logs: From tests using short vault names
 
 ## Notes / Findings
 
@@ -172,3 +166,31 @@ Solution: Skip semantic search when query is empty, run pure FTS.
 - Empty query + keywords should do FTS-only
 - Performance up to 3-5s acceptable, current ~0.5s is good
 - Tool descriptions need improvement based on findings
+
+### 2024-12-22 - Session 2: Implement Improvements
+
+**Completed:**
+1. Made `query` parameter optional (`str | None = None`)
+   - When None + keywords: FTS-only mode
+   - Error if both query and keywords are None
+
+2. Added pagination with `page` parameter
+   - 1-indexed, fetches `page * limit` from sources, slices appropriately
+   - Checked MCP docs: they use cursor-based, but page simpler for stateless search
+   - Accepted minor inconsistency if files change between page calls (pragmatic)
+
+3. Improved tool descriptions
+   - Realistic examples ("What authentication approach did we decide on?")
+   - Query format tips (1-3 sentences, question format)
+   - Updated README Tools section
+
+4. Added 8 server tests
+   - Query optional tests: FTS-only, error on both None, semantic only, combined
+   - Pagination tests: page 1, page 2 different, beyond results, concise mode
+
+**Files modified:**
+- `src/memex_md_mcp/server.py` - optional query, pagination, improved docstrings
+- `README.md` - updated Tools section with new params and examples
+- `tests/test_server.py` - new file with 8 tests
+
+**Tests:** All 73 pass
