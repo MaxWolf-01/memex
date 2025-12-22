@@ -5,6 +5,10 @@
 
 *Memex: Vannevar Bush's 1945 concept of a "memory extender" - a device for storing and retrieving personal knowledge. The conceptual ancestor of personal wikis and second brains.*
 
+READ THIS FOR THE LATEST BRAINSTORM: plans/memex-design-brainstorm.md
+
+When updating README's "Workflow Integration" section, check `agent/tasks/search-improvements.md` for query format findings and search mode recommendations to include.
+
 ## Vision & Philosophy
 
 ### The Core Idea
@@ -72,25 +76,25 @@ The separation isn't "use MCP vs don't use MCP" - it's between vaults. Project v
 
 ### Configuration
 
-All config lives in `.claude/settings.json` (global) and `.claude/settings.local.json` (per-project override). No separate config file.
+MCP config lives in `~/.claude/mcp.json` (global) and `.mcp.json` (per-project). Project config **overrides** global for servers with the same name (no merging).
 
-Vault paths via `OBSIDIAN_VAULTS` env var (colon-separated):
+Vault paths via `MEMEX_VAULTS` env var (colon-separated):
 
 ```json
 {
   "mcpServers": {
-    "obsidian": {
+    "memex": {
       "command": "uvx",
-      "args": ["mcp-obsidian"],
+      "args": ["memex-md-mcp"],
       "env": {
-        "OBSIDIAN_VAULTS": "/home/user/obsidian/personal:/home/user/obsidian/work"
+        "MEMEX_VAULTS": "/home/user/obsidian/personal:/home/user/obsidian/work"
       }
     }
   }
 }
 ```
 
-Per-project can override to scope to specific vaults.
+For project-specific vaults, you must list all paths (global + project) since configs don't merge.
 
 ### Permissions & Write Operations
 
@@ -337,6 +341,82 @@ Need to be careful about code blocks - might need to strip those first or use a 
 
 ---
 
+## Benchmarking & Testing
+
+### Current Test Vault Observations (very first commit)
+
+From manual testing with the minimal `test-vault`:
+- **FTS works** for exact keywords (`dataclass` → finds python-patterns.md)
+- **Alias matching works** (`model context protocol` → finds mcp-notes.md via alias)
+- **Semantic gap identified**: `context manager python` returns no results, even though python-patterns.md contains `contextlib.contextmanager`. FTS can't match because it's one compound word in code, not two separate words. This is a perfect test case for semantic search.
+
+### Semantic Search Test Cases
+
+The "context manager" case is exactly what semantic search should solve - conceptual similarity despite lexical mismatch. More cases to consider:
+
+- **Synonyms**: "error handling" should find notes about "exception handling"
+- **Conceptual queries**: "how to make code reusable" should find notes about patterns, decorators, abstractions
+- **Jargon variations**: "async" vs "asynchronous", "fn" vs "function"
+- **Intent-based**: "avoid code duplication" should find DRY patterns, abstractions
+
+### Benchmarking Strategy (for public release)
+
+**Manual smoke tests** (current):
+- Verify basic FTS, alias, tag matching
+- Spot-check semantic results make sense
+
+**Automated benchmark suite** (future):
+- Create a more comprehensive test vault with known-good queries
+- Query → expected notes mapping (ground truth)
+- Measure: precision@k, recall, semantic vs FTS comparison
+
+**Potential setup with Claude Code in the loop**:
+1. Generate a diverse test vault programmatically (or have Claude write varied notes on different topics)
+2. Define test queries with expected results (some FTS-friendly, some requiring semantic understanding)
+3. Run queries, compare against ground truth
+4. Track regressions when changing ranking/embedding
+
+See:
+- https://www.anthropic.com/engineering/writing-tools-for-agents
+
+
+
+### What to Test
+
+**Basic functionality**:
+- FTS exact match
+- FTS partial/fuzzy match
+- Alias resolution
+- Tag filtering
+- Wikilink indexing (backlinks work)
+
+**Semantic search edge cases**:
+- Synonym matching (the "context manager" case)
+- Conceptual similarity without keyword overlap
+- Multi-word concepts vs compound words
+- Cross-language patterns (Python idiom described, Rust equivalent found)
+
+**Integration**:
+- Claude understanding MCP tool descriptions
+- Claude formulating effective queries
+- Claude interpreting results correctly
+- Multi-vault scoping works as expected
+
+**Stress/scale** (later):
+- Large vaults (1000+ notes)
+- Indexing performance
+- Query latency
+
+**Harder to benchmark (dogfood territory)**:
+- Hierarchical/graph relationships: Does following wikilinks help Claude build context?
+- Long-range dependencies: Knowledge spread across multiple notes, needs synthesis
+- Emergent vault structure: How well does search work as vault grows organically?
+- Real-world query patterns: What does Claude actually search for in practice?
+
+These are probably best validated through actual usage rather than synthetic benchmarks. The automated suite catches regressions in core mechanics; real value shows up when dogfooding.
+
+---
+
 ## What's NOT in Scope
 
 - Write operations to vault files (Claude Code handles this)
@@ -344,4 +424,26 @@ Need to be careful about code blocks - might need to strip those first or use a 
 - Detailed prompting instructions (user-customizable)
 - Windows support
 - File watching daemon
+
+
+## Context for use case / how the idea came to be / ongoing thought dump
+
+The below is context for thinking about how to USE the MCP.
+Might be relevant when thinking abt how to design the tools...
+
+- claude idea: instead of treating plans as plans treat them as a global knowledge base
+ - -> Where does the index live? Global CLAUDE.md? Rebuild index in every project to have only relevenat context? Nah. Global index, but (periodically; hooks?) pull in information (lines) into project CLAUDE.md? 
+ - -> disable auto-compaction, but write a hook on "low" context (actually s.t. like 40-60% is still left) to update global knowledge? Sth like that. And also a hook to like yh do it at the end again, or like write a command for it /update-knowledge
+ - -> Needs more thought about how to structure and update and describe lines in the index, how to name files, and whatever. Prlly the naming shouldn't carry too much weight, but have some prefix at least to indicate it's part of the global knowledge vs just a "normal" plan / plan that was created without thinking of it as being global knowledge!
+ - -> Then actual PLANS will also work better than the system I have currently, if knowledge is separated.
+	  -  ==it's extremely important that claude distinguishes between what he know for a FACT, is pretty confident, suspects, sees as a possibility or is speculating when writing KNOWLEDGE files==
+	  - this especially applies for (my) "opinions/preferences" or "decisions we made" - as he often is very happy to overconfidently overinterpret these things
+ - =>>> We just need an obsidian++ MCP (alias enhanced search; semantic search; wikilink enhanced search) !  ~~https://www.onyx.md/~~ for parsing power if we need it => memex
+ - implementation plans shouldn't duplicate the git history, but augment it - or no, actually, implementation plans are only necessary for facilitating handovers and short-term context integrity
+    - this means it's unnecessary to update plan with "finished"? just git commit / git log 
+    - and updating the KNOWLDGE with the knowledge. plans should be ephemeral / deleted after commit, and after the learnings have been distilled at the end of the implementation.
+    - only update the plan during execution, and only update knowledge at the end of execution? how manual / automatic can I make it?
+    - architecture notes etc. are in project specific vaults
+    - how to handle todos? single long doc prlly? or split into like "frontend todo" etc. prlly the former.
+    - HANDOVER-feat-xyz.md files for the ephemeral ones?
 

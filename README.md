@@ -95,7 +95,7 @@ In addition, the below commands heavily leverage memex to allow claude to let Cl
 <details>
 <summary><h4>Example Workflow</h4></summary>
 
-Template for integrating memex into your project's CLAUDE.md instructions:
+~~Template for integrating memex into your project's CLAUDE.md instructions:~~ Link to slash commands in repo instead? Or put both here in two code blocks?
 
 ~~~markdown
 ## Knowledge Base (memex MCP)
@@ -127,7 +127,11 @@ make release # bumps minor version, builds and publishes to pypi with new tag
 
 - [x] Basic functionality
 - [x] Refinement of search ranking
+- [ ] Release workflow: Add/adapt make commands to release with optionally major/minor bumps & maybe once 1.0 in install instructions note that @latest can be used but then you might not know whether you need to re-index/delete the old db... can uvx handle updating only patch versions via "@..."? So yh live dangerously or use the 1.0.0 version and occasionally check or rather subscribe the repo for releases. Prlly won't change that much.
 - [ ] More thorough benchmarking
 - [ ] Ignore patterns?
-- [ ] Include workflow examples as skills? Currently I use them as slash commands. Claude 5/6 might be autonomous enough to apply them directly, and grow a memex vault largely unsupervised.
+- [ ] Include workflow examples as skills? Currently I use them as slash commands. Claude 5/6 might be autonomous enough to apply them directly, and grow a memex vault largely unsupervised. 
+   - Actually, a step towards that will probably be agents managing other agents with this workflow.
+   - Also see https://github.com/anthropics/claude-code/issues/13115
+
 
