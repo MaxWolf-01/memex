@@ -9,10 +9,12 @@ MCP server for semantic search over markdown vaults. Give your LLM persistent me
 ## Quick Start
 
 ```bash
-claude mcp add memex uvx memex-md-mcp@latest
+claude mcp add memex -- uvx --from 'memex-md-mcp==1.*' memex-md-mcp
 ```
 
 Then ask Claude to help configure your vaults - it has `mcp_info()` which explains everything. Or manually edit your settings (see Configuration below).
+
+**Version note:** The above pins to the latest 1.x release for stability. For bleeding edge, use `memex-md-mcp@latest`—but watch the repo for releases, since major bumps may require deleting your index (`~/.local/share/memex-md-mcp/memex.db`).
 
 ## What This Does
 
@@ -99,6 +101,7 @@ Workflow: Search to find entry points → Explore to follow connections (outlink
 ```
 
 For structured task management and knowledge archiving that leverage memex, see [`/task`](https://github.com/MaxWolf-01/dotfiles/blob/master/claude/commands/task.md) and [`/archive`](https://github.com/MaxWolf-01/dotfiles/blob/master/claude/commands/archive.md) — example workflows for autonomous, parallel (multi-clauded), yet reliable and verifiable work.
+For using this workflow, I also recommend turning off auto-compaction (you save soo much context) and increasing `MAX_MCP_OUTPUT_TOKENS": "50000"` from the default 25k in your claude settings.
 
 ## Benchmarks
 
@@ -115,16 +118,15 @@ Speed:
 
 ```bash
 uv sync
-make check   # ruff + ty
-make test    # pytest
-make release # bumps minor version, builds and publishes to pypi with new tag
+make check          # ruff + ty
+make test           # pytest
+make release-patch  # 0.2.6 -> 0.2.7, tag, push
+make release-minor  # 0.2.6 -> 0.3.0
+make release-major  # 0.2.6 -> 1.0.0
 ```
 
 ## Roadmap
 
-- [x] Basic functionality
-- [x] Refinement of search ranking
-- [ ] Release workflow: Add/adapt make commands to release with optionally major/minor bumps & maybe once 1.0 in install instructions note that @latest can be used but then you might not know whether you need to re-index/delete the old db... can uvx handle updating only patch versions via "@..."? So yh live dangerously or use the 1.0.0 version and occasionally check or rather subscribe the repo for releases. Prlly won't change that much.
 - [ ] More thorough benchmarking
 - [ ] Ignore patterns?
 - [ ] Include workflow examples as skills? Currently I use them as slash commands. Claude 5/6 might be autonomous enough to apply them directly, and grow a memex vault largely unsupervised. 
