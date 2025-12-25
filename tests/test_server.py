@@ -59,7 +59,8 @@ class TestSearchQueryOptional:
         paths = result[str(vault_env)]
         assert any("auth" in p["path"] for p in paths)
 
-    def test_error_when_both_none(self, vault_env):
+    @pytest.mark.usefixtures("vault_env")
+    def test_error_when_both_none(self):
         """Returns error when both query and keywords are None."""
         result = search(query=None, keywords=None)
 
@@ -95,7 +96,8 @@ class TestSearchPagination:
             total_results = sum(len(v) for v in result.values() if isinstance(v, list))
             assert total_results <= 2
 
-    def test_page_2_returns_different_results(self, vault_env):
+    @pytest.mark.usefixtures("vault_env")
+    def test_page_2_returns_different_results(self):
         """Page 2 returns different results than page 1."""
         result1 = search(query="programming language", limit=2, page=1)
         result2 = search(query="programming language", limit=2, page=2)
@@ -118,7 +120,8 @@ class TestSearchPagination:
         if paths1 and paths2:
             assert paths1 != paths2
 
-    def test_page_beyond_results_empty(self, vault_env):
+    @pytest.mark.usefixtures("vault_env")
+    def test_page_beyond_results_empty(self):
         """Page far beyond results returns no results message."""
         result = search(query="programming", limit=2, page=100)
 
