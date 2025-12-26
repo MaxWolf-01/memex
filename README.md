@@ -55,11 +55,12 @@ Multiple vault paths are colon-separated. Project `.mcp.json` **overrides** glob
 
 ## Tools
 
-**search(query?, keywords?, vault?, limit=5, page=1, concise=False)** — semantic search over vaults.
+**search(query?, keywords?, vault?, limit=5, page=1, concise=True)** — semantic search over vaults.
 
 - `query`: Describe what you're looking for in natural language. Use 1-3 sentences, question format works well. If omitted, runs FTS-only mode with keywords.
 - `keywords`: Optional list of exact terms to boost. Required if query is omitted.
 - `page`: Page number for pagination (1-indexed).
+- `concise`: Returns only paths by default. Use `concise=False` for full content.
 
 ```
 search("What authentication approach did we decide on? I remember we discussed OAuth.")
@@ -69,11 +70,13 @@ search(keywords=["PostgreSQL"])  # FTS-only mode
 
 **explore(note_path, vault, concise=False)** — graph traversal from a note.
 
-Returns outlinks (what it references), backlinks (what references it), and semantically similar notes not yet linked. Outlinks include image embeds (`![[image.png]]`)—use Read tool to view them.
+Returns outlinks (what it references), backlinks (what references it), and semantically similar notes not yet linked. Includes full content of the explored note (not neighbors). Outlinks include image embeds (`![[image.png]]`)—use Read tool to view them.
 
 ```
 explore("architecture/api-design.md", "/home/user/project/docs")
 ```
+
+**Typical workflow:** `search()` to find entry points → `explore()` promising results to read content + see connections.
 
 **mcp_info()** — returns this README.
 
@@ -97,7 +100,7 @@ Search tips:
 - For exact term lookup, use keywords parameter with a focused query
 - For precise "find this exact file/string" needs, use grep/rg instead — memex is for exploration
 
-Workflow: Search to find entry points → Explore to follow connections (outlinks, backlinks, similar notes) → Build context before implementation.
+Workflow: search() returns paths by default (concise) → explore() promising results to read content + see connections → Build context before implementation.
 ```
 
 For structured task management and knowledge archiving that leverage memex, see [`/task`](https://github.com/MaxWolf-01/dotfiles/blob/master/claude/commands/task.md) and [`/archive`](https://github.com/MaxWolf-01/dotfiles/blob/master/claude/commands/archive.md) — example workflows for autonomous, parallel (multi-clauded), yet reliable and verifiable work.

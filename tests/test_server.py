@@ -52,7 +52,7 @@ def vault_env(temp_vault):
 class TestSearchQueryOptional:
     def test_fts_only_with_keywords(self, vault_env):
         """When query=None and keywords provided, runs FTS-only."""
-        result = search(query=None, keywords=["OAuth"], limit=5)
+        result = search(query=None, keywords=["OAuth"], limit=5, concise=False)
 
         # Should find auth.md via FTS
         assert str(vault_env) in result
@@ -80,6 +80,7 @@ class TestSearchQueryOptional:
             query="What authentication method did we choose?",
             keywords=["OAuth", "JWT"],
             limit=5,
+            concise=False,
         )
 
         assert str(vault_env) in result

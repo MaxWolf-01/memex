@@ -94,7 +94,7 @@ def search(
     vault: str | None = None,
     limit: int = 5,
     page: int = 1,
-    concise: bool = False,
+    concise: bool = True,
 ) -> dict:
     """Search across markdown vaults using semantic search, optionally boosted by keyword matching.
 
@@ -114,7 +114,7 @@ def search(
         vault: Specific vault to search (None = all vaults)
         limit: Maximum number of results per page
         page: Page number (1-indexed). Use to get more results beyond the first page.
-        concise: If True, return only paths grouped by vault. If False (default), full content.
+        concise: If True (default), return only paths grouped by vault. If False, full content.
 
     Returns:
         Results grouped by vault absolute path. Keys are vault paths, values are lists of
