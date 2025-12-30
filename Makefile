@@ -38,7 +38,13 @@ build: clean
 publish: build
 	uv publish && git push && git push --tags
 	@VERSION=$$(grep 'version = ' pyproject.toml | head -1 | cut -d'"' -f2) && \
-		gh release create "v$$VERSION" --generate-notes --title "v$$VERSION"
+		PREV_TAG=$$(git describe --tags --abbrev=0 "v$$VERSION^" 2>/dev/null || echo "") && \
+		if [ -n "$$PREV_TAG" ]; then \
+			NOTES=$$(git log "$$PREV_TAG..v$$VERSION" --pretty=format:"- %s" | grep -v "^- Release v"); \
+		else \
+			NOTES=$$(git log "v$$VERSION" --pretty=format:"- %s" | grep -v "^- Release v"); \
+		fi && \
+		gh release create "v$$VERSION" --title "v$$VERSION" --notes "$$NOTES"
 
 define bump_version
 	@uv run python -c 'import tomllib; s=open("pyproject.toml","r",encoding="utf-8").read(); v=tomllib.loads(s)["project"]["version"]; a,mi,pa=map(int,v.split(".")); nv=$(1); open("pyproject.toml","w",encoding="utf-8").write(s.replace(f"version = \"{v}\"", f"version = \"{nv}\"", 1)); print(f"Bumped {v} -> {nv}")'
