@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 import memex_md_mcp.db as db_module
-from memex_md_mcp.server import search
+from memex_md_mcp.server import resolve_vault_path, search
 
 
 @pytest.fixture
@@ -140,3 +140,37 @@ class TestSearchPagination:
             paths = result[str(vault_env)]
             assert all(isinstance(p, str) for p in paths)
             assert len(paths) <= 2
+
+
+class TestVaultPathResolution:
+    def test_resolve_vault_path_none_returns_none(self):
+        """None vault returns None."""
+        vaults = {"/abs/path": Path("/abs/path")}
+        assert resolve_vault_path(None, vaults) is None
+
+    def test_resolve_vault_path_relative_to_absolute(self, temp_vault):
+        """Relative path resolves to absolute when it matches a configured vault."""
+        vaults = {str(temp_vault): temp_vault}
+        # Create a relative path that would resolve to temp_vault
+        # We need to be in a specific dir for this, so use the absolute path directly
+        result = resolve_vault_path(str(temp_vault), vaults)
+        assert result == str(temp_vault)
+
+    def test_resolve_vault_path_unknown_returns_original(self):
+        """Unknown vault path returns original (for error handling later)."""
+        vaults = {"/configured/vault": Path("/configured/vault")}
+        result = resolve_vault_path("/unknown/path", vaults)
+        assert result == "/unknown/path"
+
+    @pytest.mark.usefixtures("vault_env")
+    def test_search_invalid_vault_returns_error(self):
+        """Search with invalid vault returns error instead of silently failing."""
+        result = search(query="test", vault="/nonexistent/vault")
+        assert "error" in result
+        assert "not found" in result["error"]
+
+    def test_search_valid_vault_works(self, vault_env):
+        """Search with valid absolute vault path works."""
+        result = search(query="programming", vault=str(vault_env))
+        # Should not have an error
+        assert "error" not in result

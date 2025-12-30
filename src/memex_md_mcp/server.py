@@ -47,6 +47,18 @@ def parse_vaults_env() -> dict[str, Path]:
     return vaults
 
 
+def resolve_vault_path(vault: str | None, vaults: dict[str, Path]) -> str | None:
+    """Resolve user-provided vault path to match configured vault IDs.
+
+    Users may provide relative paths (./agent) or paths with ~ that need resolution.
+    Vault IDs in the vaults dict are always absolute resolved paths.
+    """
+    if vault is None:
+        return None
+    resolved = str(Path(vault).expanduser().resolve())
+    return resolved if resolved in vaults else vault
+
+
 def sanitize_for_fts(keywords: list[str]) -> str:
     """Sanitize keywords for FTS5 query. Strips problematic punctuation."""
     sanitized = []
@@ -128,6 +140,10 @@ def search(
 
     if not query and not keywords:
         return {"error": "Provide query (semantic search) or keywords (FTS), or both."}
+
+    vault = resolve_vault_path(vault, vaults)
+    if vault is not None and vault not in vaults:
+        return {"error": f"Vault '{vault}' not found. Available: {list(vaults.keys())}"}
 
     conn = get_connection()
     index_all_vaults(conn, vaults, on_progress=lambda _: None)
@@ -242,6 +258,7 @@ def explore(
     if not vaults:
         return {"error": "No vaults configured. Set MEMEX_VAULTS env var."}
 
+    vault = resolve_vault_path(vault, vaults) or vault
     if vault not in vaults:
         return {"error": f"Vault '{vault}' not found. Available: {list(vaults.keys())}"}
 
