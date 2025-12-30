@@ -1,20 +1,51 @@
 """Embedding model loading and text embedding."""
 
+import logging
+import threading
+
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
 MODEL_NAME = "google/embeddinggemma-300m"
 EMBEDDING_DIM = 768
+IDLE_UNLOAD_SECONDS = 300  # 5 minutes
 
 _model: SentenceTransformer | None = None
+_unload_timer: threading.Timer | None = None
+_lock = threading.Lock()
+
+logger = logging.getLogger(__name__)
+
+
+def _unload_model() -> None:
+    """Unload the model to free memory."""
+    global _model, _unload_timer
+    with _lock:
+        if _model is not None:
+            logger.info("Unloading embedding model after idle timeout")
+            _model = None
+        _unload_timer = None
+
+
+def _reset_unload_timer() -> None:
+    """Reset the idle unload timer."""
+    global _unload_timer
+    if _unload_timer is not None:
+        _unload_timer.cancel()
+    _unload_timer = threading.Timer(IDLE_UNLOAD_SECONDS, _unload_model)
+    _unload_timer.daemon = True  # Don't block process exit
+    _unload_timer.start()
 
 
 def get_model() -> SentenceTransformer:
-    """Lazy-load the embedding model."""
+    """Lazy-load the embedding model. Unloads after idle timeout to free memory."""
     global _model
-    if _model is None:
-        _model = SentenceTransformer(MODEL_NAME)
-    return _model
+    with _lock:
+        if _model is None:
+            logger.info("Loading embedding model")
+            _model = SentenceTransformer(MODEL_NAME)
+        _reset_unload_timer()
+        return _model
 
 
 def embed_text(text: str) -> np.ndarray:
