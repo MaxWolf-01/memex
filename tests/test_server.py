@@ -346,6 +346,22 @@ class TestRename:
         assert "error" in result
         assert "not found" in result["error"].lower()
 
+    def test_rename_by_title_resolves_subdirectory(self, vault_env_links):
+        """Rename can find a note by unique title even if it's in a subdirectory."""
+        vault_path = vault_env_links
+        # Create a note in a subdirectory with a unique title
+        (vault_path / "docs").mkdir()
+        (vault_path / "docs" / "guide.md").write_text("# Guide\nSome documentation.")
+
+        # Should resolve "guide" to "docs/guide.md"
+        result = rename(note_path="guide", new_name="manual", vault=str(vault_path))
+
+        assert "error" not in result
+        assert result["old_path"] == "docs/guide.md"
+        assert result["new_path"] == "docs/manual.md"
+        assert (vault_path / "docs" / "manual.md").exists()
+        assert not (vault_path / "docs" / "guide.md").exists()
+
     @pytest.fixture
     def vault_with_complex_links(self):
         """Create a vault with various wikilink formats."""
@@ -591,36 +607,52 @@ class TestRenameEdgeCases:
             ):
                 yield vault_with_case_variants
 
-    def test_rename_lowercase_preferred_file(self, vault_env_case_variants):
-        """Renaming the lowercase file (preferred) updates all title links."""
+    def test_rename_case_variant_requires_disambiguation(self, vault_env_case_variants):
+        """When case variants exist, filename alone is ambiguous - require full path."""
         # Skip if filesystem is case-insensitive
         if not (vault_env_case_variants / "Note.md").exists():
             pytest.skip("Filesystem is case-insensitive")
 
-        result = rename(note_path="note.md", new_name="document", vault=str(vault_env_case_variants))
+        # Both should error because title "note" matches both note.md and Note.md
+        result_lower = rename(note_path="note.md", new_name="document", vault=str(vault_env_case_variants))
+        assert "error" in result_lower
+        assert "Multiple notes with title" in result_lower["error"]
 
-        assert "error" not in result
-        content = (vault_env_case_variants / "index.md").read_text()
+        result_upper = rename(note_path="Note.md", new_name="Document", vault=str(vault_env_case_variants))
+        assert "error" in result_upper
+        assert "Multiple notes with title" in result_upper["error"]
 
-        # Both [[note]] and [[Note]] should be updated (Obsidian resolves both to lowercase)
-        assert "[[document]]" in content
-        # Count should be 2 (both links updated)
-        assert content.count("[[document]]") == 2
-
-    def test_rename_uppercase_non_preferred_file(self, vault_env_case_variants):
-        """Renaming the uppercase file (not preferred) skips title links."""
+    def test_rename_path_exact_match_works_with_case_variants(self, vault_env_case_variants):
+        """When path-based case variants exist, exact path match still works."""
+        vault_path = vault_env_case_variants
         # Skip if filesystem is case-insensitive
-        if not (vault_env_case_variants / "Note.md").exists():
+        if not (vault_path / "Note.md").exists():
             pytest.skip("Filesystem is case-insensitive")
 
-        result = rename(note_path="Note.md", new_name="Document", vault=str(vault_env_case_variants))
+        # Create case variants in a subdirectory
+        (vault_path / "docs").mkdir()
+        (vault_path / "docs" / "guide.md").write_text("# Guide\nLowercase guide.")
+        (vault_path / "docs" / "Guide.md").write_text("# Guide\nUppercase Guide.")
 
+        # Exact path should work - user specified exactly which one
+        result = rename(note_path="docs/guide.md", new_name="manual", vault=str(vault_path))
         assert "error" not in result
-        content = (vault_env_case_variants / "index.md").read_text()
+        assert result["old_path"] == "docs/guide.md"
+        assert result["new_path"] == "docs/manual.md"
 
-        # Title links should NOT be updated (they resolve to lowercase note.md, not Note.md)
-        # Both [[note]] and [[Note]] still exist
-        assert "[[note]]" in content or "[[Note]]" in content
+    def test_rename_path_ambiguous_without_exact_match(self, vault_env_case_variants):
+        """Path-based lookup errors when no exact match and multiple case variants exist."""
+        vault_path = vault_env_case_variants
+        # Skip if filesystem is case-insensitive
+        if not (vault_path / "Note.md").exists():
+            pytest.skip("Filesystem is case-insensitive")
 
-        # Should have warning about skipped links
-        assert "skipped_ambiguous" in result or "warning" in result
+        # Create case variants in a subdirectory
+        (vault_path / "docs").mkdir()
+        (vault_path / "docs" / "Guide.md").write_text("# Guide\nUppercase Guide.")
+        (vault_path / "docs" / "GUIDE.md").write_text("# GUIDE\nAll caps GUIDE.")
+
+        # "docs/guide" doesn't match exactly, and there are multiple case variants
+        result = rename(note_path="docs/guide", new_name="manual", vault=str(vault_path))
+        assert "error" in result
+        assert "Multiple notes match path" in result["error"]

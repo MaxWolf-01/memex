@@ -2,6 +2,7 @@
 
 import json
 import os
+import sqlite3
 import time
 from importlib.metadata import metadata
 from pathlib import Path
@@ -60,6 +61,61 @@ def resolve_vault_path(vault: str | None, vaults: dict[str, Path]) -> str | None
         return None
     resolved = str(Path(vault).expanduser().resolve())
     return resolved if resolved in vaults else vault
+
+
+def resolve_note_for_user(
+    conn: sqlite3.Connection, vault: str, note_path: str
+) -> tuple[IndexedNote | None, str | None]:
+    """Resolve user-provided note path to a specific note.
+
+    Handles both title-based and path-based inputs, with ambiguity detection
+    to avoid accidental operations on the wrong note.
+
+    Resolution rules:
+        Title (no "/"): Case-insensitive title lookup across all directories.
+                        Errors if multiple files share the same title.
+        Path (has "/"): Exact match first. Falls back to case-insensitive only
+                        if no exact match. Errors only when no exact match AND
+                        multiple case variants exist.
+
+    Examples:
+        Input              Files exist                      Result
+        "guide"            docs/guide.md                    OK - unique title
+        "readme"           readme.md, docs/readme.md        Error - ambiguous
+        "docs/guide.md"    docs/guide.md, docs/Guide.md     OK - exact match
+        "docs/guide"       docs/Guide.md, docs/GUIDE.md     Error - no exact, multiple variants
+
+    Returns:
+        (note, None) on success
+        (None, error_message) on failure
+    """
+    note = get_note(conn, vault, note_path)
+    path_without_ext = note_path.removesuffix(".md")
+
+    if "/" in note_path:
+        # Path-based input - user is being specific
+        # Only do case-insensitive fallback if no exact match
+        if not note:
+            matching_paths = get_files_with_path(conn, vault, path_without_ext)
+            if len(matching_paths) > 1:
+                paths_str = ", ".join(sorted(matching_paths))
+                return None, f"Multiple notes match path '{note_path}': {paths_str}. Use exact case."
+            if len(matching_paths) == 1:
+                note = get_note(conn, vault, matching_paths[0])
+    else:
+        # Title-based input - check for ambiguity across all directories
+        matching_paths = get_files_with_title(conn, vault, path_without_ext)
+        if len(matching_paths) > 1:
+            paths_str = ", ".join(sorted(matching_paths))
+            return None, f"Multiple notes with title '{path_without_ext}': {paths_str}. Specify full path."
+        # If no direct match but one title match, use it
+        if not note and len(matching_paths) == 1:
+            note = get_note(conn, vault, matching_paths[0])
+
+    if not note:
+        return None, f"Note not found: {note_path}"
+
+    return note, None
 
 
 def sanitize_for_fts(keywords: list[str]) -> str:
@@ -279,36 +335,22 @@ def explore(
     conn = get_connection()
     index_all_vaults(conn, {vault: vaults[vault]}, on_progress=lambda _: None)
 
-    note = get_note(conn, vault, note_path)
-    resolved_path = note.path if note else None
-
-    # When path has no "/" it could be a title - check for ambiguity
-    if "/" not in note_path:
-        title = note_path.removesuffix(".md")
-        matching_paths = get_files_with_title(conn, vault, title)
-        if len(matching_paths) > 1:
-            conn.close()
-            paths_str = ", ".join(matching_paths)
-            return {"error": f"Multiple notes with title '{title}': {paths_str}. Specify full path."}
-        # If no direct match but one title match, use it
-        if not note and len(matching_paths) == 1:
-            resolved_path = matching_paths[0]
-            note = get_note(conn, vault, resolved_path)
-
-    if not note or not resolved_path:
+    note, error = resolve_note_for_user(conn, vault, note_path)
+    if error:
         conn.close()
-        return {"error": f"Note not found: {note_path}"}
+        return {"error": error}
+    assert note is not None
 
-    outlink_targets = get_outlinks(conn, vault, resolved_path)
-    note_name = path_to_note_name(resolved_path)
+    outlink_targets = get_outlinks(conn, vault, note.path)
+    note_name = path_to_note_name(note.path)
     backlink_paths = get_backlinks(conn, vault, note_name)
 
     # Find semantically similar notes that aren't already linked (skip if semantic disabled)
     similar_notes: list[tuple[IndexedNote, float]] = []
-    embedding = get_note_embedding(conn, vault, resolved_path) if is_semantic_enabled() else None
+    embedding = get_note_embedding(conn, vault, note.path) if is_semantic_enabled() else None
     if embedding is not None:
         candidates = search_semantic(conn, embedding, vault=vault, limit=10)  # fetch extra to filter
-        excluded_paths = {resolved_path} | set(backlink_paths)
+        excluded_paths = {note.path} | set(backlink_paths)
         for candidate, distance in candidates:
             if candidate.path not in excluded_paths:
                 similar_notes.append((candidate, distance))
@@ -404,11 +446,11 @@ def rename(
     conn = get_connection()
     index_all_vaults(conn, {vault: vault_path}, on_progress=lambda _: None)
 
-    # Resolve source note
-    note = get_note(conn, vault, note_path)
-    if not note:
+    note, error = resolve_note_for_user(conn, vault, note_path)
+    if error:
         conn.close()
-        return {"error": f"Note not found: {note_path}"}
+        return {"error": error}
+    assert note is not None
 
     old_path = note.path
     old_title = path_to_note_name(old_path)
