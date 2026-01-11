@@ -170,11 +170,16 @@ def delete_vault(conn: sqlite3.Connection, vault: str) -> int:
 
 
 def get_note(conn: sqlite3.Connection, vault: str, path: str) -> IndexedNote | None:
-    """Retrieve a single note by vault and path."""
+    """Retrieve a single note by vault and path. Extension .md is optional."""
     row = conn.execute(
         "SELECT * FROM notes WHERE path = ? AND vault = ?",
         (path, vault),
     ).fetchone()
+    if not row and not path.endswith(".md"):
+        row = conn.execute(
+            "SELECT * FROM notes WHERE path = ? AND vault = ?",
+            (path + ".md", vault),
+        ).fetchone()
     if not row:
         return None
     return IndexedNote(
@@ -276,11 +281,17 @@ def get_outlinks(conn: sqlite3.Connection, vault: str, path: str) -> list[tuple[
     Returns list of (target_raw, resolved_paths) tuples.
     resolved_paths is a list of matching note paths (can be empty if unresolved,
     or multiple if case-insensitive matching finds duplicates like "Foo" and "foo").
+    Extension .md is optional in path.
     """
     rows = conn.execute(
         "SELECT target_raw FROM wikilinks WHERE source_vault = ? AND source_path = ?",
         (vault, path),
     ).fetchall()
+    if not rows and not path.endswith(".md"):
+        rows = conn.execute(
+            "SELECT target_raw FROM wikilinks WHERE source_vault = ? AND source_path = ?",
+            (vault, path + ".md"),
+        ).fetchall()
 
     results = []
     for row in rows:
@@ -304,17 +315,99 @@ def resolve_wikilink(conn: sqlite3.Connection, vault: str, target: str) -> list[
 
 
 def get_backlinks(conn: sqlite3.Connection, vault: str, note_name: str) -> list[str]:
-    """Find all notes that link TO the given note.
+    """Find all notes that link TO the given note by title (case-insensitive).
 
     Args:
         vault: Vault to search in
         note_name: The note name as it appears in wikilinks, i.e. the filename without extension
+
+    Note: Case-insensitive matching to match Obsidian's wikilink resolution behavior.
+    For more precise link finding (including path-based links), use find_links_to_note().
     """
     rows = conn.execute(
-        "SELECT DISTINCT source_path FROM wikilinks WHERE source_vault = ? AND target_raw = ?",
+        "SELECT DISTINCT source_path FROM wikilinks WHERE source_vault = ? AND LOWER(target_raw) = LOWER(?)",
         (vault, note_name),
     ).fetchall()
     return [row["source_path"] for row in rows]
+
+
+def get_files_with_title(conn: sqlite3.Connection, vault: str, title: str) -> list[str]:
+    """Find all files with the given title (case-insensitive).
+
+    Returns list of paths. Used to detect ambiguous wikilinks.
+    """
+    rows = conn.execute(
+        "SELECT path FROM notes WHERE vault = ? AND LOWER(title) = LOWER(?)",
+        (vault, title),
+    ).fetchall()
+    return [row["path"] for row in rows]
+
+
+def get_files_with_path(conn: sqlite3.Connection, vault: str, path_without_ext: str) -> list[str]:
+    """Find all files with the given path (case-insensitive, without .md extension).
+
+    Returns list of paths. Used to detect path-based link ambiguity on case-sensitive filesystems.
+    """
+    rows = conn.execute(
+        "SELECT path FROM notes WHERE vault = ? AND LOWER(path) = LOWER(?)",
+        (vault, path_without_ext + ".md"),
+    ).fetchall()
+    return [row["path"] for row in rows]
+
+
+def find_links_to_note(
+    conn: sqlite3.Connection, vault: str, note_path: str
+) -> list[tuple[str, str, str]]:
+    """Find all wikilinks that resolve to the given note.
+
+    Returns list of (source_path, target_raw, link_type) tuples where link_type is:
+    - "path": Link uses path (e.g., [[subdir/note]] for subdir/note.md)
+    - "path_ambiguous": Path link but multiple files match (different case)
+    - "title": Link uses title (e.g., [[note]] for note.md or subdir/note.md)
+    - "title_ambiguous": Title link but multiple files share this title
+
+    This handles:
+    - Path-based links: [[subdir/note]] → matches subdir/note.md
+    - Title-based links: [[note]] → matches any note.md in vault
+    - Case variants: [[Note]], [[NOTE]] etc.
+    - Same-path-different-case: [[subdir/Note]] vs [[subdir/note]]
+    """
+    title = Path(note_path).stem  # filename without .md
+    path_without_ext = note_path.removesuffix(".md")
+
+    results = []
+
+    # Find path-based links (case-insensitive for cross-platform)
+    path_links = conn.execute(
+        "SELECT source_path, target_raw FROM wikilinks WHERE source_vault = ? AND LOWER(target_raw) = LOWER(?)",
+        (vault, path_without_ext),
+    ).fetchall()
+
+    # Check if path is ambiguous (multiple files with same path, different case)
+    files_with_path = get_files_with_path(conn, vault, path_without_ext)
+    is_path_ambiguous = len(files_with_path) > 1
+
+    for row in path_links:
+        link_type = "path_ambiguous" if is_path_ambiguous else "path"
+        results.append((row["source_path"], row["target_raw"], link_type))
+
+    # Find title-based links (just the filename, no path)
+    # But only if target_raw doesn't contain '/' (otherwise it's a path link)
+    title_links = conn.execute(
+        """SELECT source_path, target_raw FROM wikilinks
+           WHERE source_vault = ? AND LOWER(target_raw) = LOWER(?) AND target_raw NOT LIKE '%/%'""",
+        (vault, title),
+    ).fetchall()
+
+    # Check if title is ambiguous (multiple files with same title)
+    files_with_title = get_files_with_title(conn, vault, title)
+    is_title_ambiguous = len(files_with_title) > 1
+
+    for row in title_links:
+        link_type = "title_ambiguous" if is_title_ambiguous else "title"
+        results.append((row["source_path"], row["target_raw"], link_type))
+
+    return results
 
 
 def upsert_embedding(conn: sqlite3.Connection, note_rowid: int, embedding: np.ndarray) -> None:
@@ -328,8 +421,10 @@ def upsert_embedding(conn: sqlite3.Connection, note_rowid: int, embedding: np.nd
 
 
 def get_note_rowid(conn: sqlite3.Connection, vault: str, path: str) -> int | None:
-    """Get the rowid for a note by vault and path."""
+    """Get the rowid for a note by vault and path. Extension .md is optional."""
     row = conn.execute("SELECT rowid FROM notes WHERE vault = ? AND path = ?", (vault, path)).fetchone()
+    if not row and not path.endswith(".md"):
+        row = conn.execute("SELECT rowid FROM notes WHERE vault = ? AND path = ?", (vault, path + ".md")).fetchone()
     return row[0] if row else None
 
 

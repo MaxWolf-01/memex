@@ -1,6 +1,7 @@
 """Embedding model loading and text embedding."""
 
 import logging
+import os
 import threading
 
 import numpy as np
@@ -9,6 +10,11 @@ from sentence_transformers import SentenceTransformer
 MODEL_NAME = "google/embeddinggemma-300m"
 EMBEDDING_DIM = 768
 IDLE_UNLOAD_SECONDS = 300  # 5 minutes
+
+
+def is_semantic_enabled() -> bool:
+    """Check if semantic search is enabled. Set MEMEX_DISABLE_SEMANTIC=1 to disable."""
+    return os.environ.get("MEMEX_DISABLE_SEMANTIC", "").lower() not in ("1", "true", "yes")
 
 _model: SentenceTransformer | None = None
 _unload_timer: threading.Timer | None = None

@@ -10,15 +10,18 @@ from mcp.server.fastmcp import FastMCP
 
 from memex_md_mcp.db import (
     IndexedNote,
+    find_links_to_note,
     get_backlinks,
     get_connection,
+    get_files_with_path,
+    get_files_with_title,
     get_note,
     get_note_embedding,
     get_outlinks,
     search_fts,
     search_semantic,
 )
-from memex_md_mcp.embeddings import embed_text
+from memex_md_mcp.embeddings import embed_text, is_semantic_enabled
 from memex_md_mcp.indexer import index_all_vaults
 from memex_md_mcp.logging import get_logger
 
@@ -114,14 +117,18 @@ def search(
     full-text search results are fused in using RRF (Reciprocal Rank Fusion) to boost notes
     containing those exact terms.
 
+    Note: Semantic search can be disabled via MEMEX_DISABLE_SEMANTIC=1. When disabled, only
+    keyword-based FTS is available; the query parameter will be ignored.
+
     Args:
         query: Describe what you're looking for in natural language. Use 1-3 sentences for best
                results. Question format works well ("What...?", "How did we...?").
                If None, runs FTS-only mode using keywords (useful for exact term lookup).
+               Ignored if semantic search is disabled.
                (e.g., "What authentication approach did we decide on? I remember we discussed OAuth vs sessions.")
         keywords: Optional list of exact terms to match. Use for specific names, acronyms,
                   or technical terms. Notes containing these get boosted in results.
-                  Required if query is None.
+                  Required if query is None or semantic search is disabled.
                   (e.g., ["OAuth", "JWT", "session"])
         vault: Specific vault to search (None = all vaults)
         limit: Maximum number of results per page
@@ -151,11 +158,15 @@ def search(
     # Fetch enough results to cover requested page
     fetch_limit = page * limit
 
-    # Semantic search (only if query provided)
+    # Semantic search (only if query provided and enabled)
     semantic_results: list[tuple[IndexedNote, float]] = []
-    if query:
+    semantic_enabled = is_semantic_enabled()
+    semantic_skipped = False
+    if query and semantic_enabled:
         query_embedding = embed_text(query)
         semantic_results = search_semantic(conn, query_embedding, vault=vault, limit=fetch_limit)
+    elif query and not semantic_enabled:
+        semantic_skipped = True
 
     # FTS search (only if keywords provided)
     fts_results: list[IndexedNote] = []
@@ -185,26 +196,26 @@ def search(
     page_results = combined[offset : offset + limit]
 
     search_desc = query if query else f"keywords={keywords}"
+    result: dict = {}
     if not page_results:
-        result: dict = {"message": f"No results for '{search_desc}' (page {page})", "vaults_searched": list(vaults.keys())}
+        result = {"message": f"No results for '{search_desc}' (page {page})", "vaults_searched": list(vaults.keys())}
     elif concise:
         # Group paths by vault for token efficiency
-        grouped: dict[str, list[str]] = {}
         for r in page_results:
-            grouped.setdefault(r.vault, []).append(r.path)
-        result = grouped
+            result.setdefault(r.vault, []).append(r.path)
     else:
         # Group full results by vault
-        grouped_full: dict[str, list[dict]] = {}
         for r in page_results:
-            grouped_full.setdefault(r.vault, []).append({
+            result.setdefault(r.vault, []).append({
                 "path": r.path,
                 "title": r.title,
                 "aliases": r.aliases,
                 "tags": r.tags,
                 "content": r.content,
             })
-        result = grouped_full
+
+    if semantic_skipped:
+        result["info"] = "Semantic search disabled, query parameter ignored. Use keywords for FTS."
 
     elapsed = time.monotonic() - start_time
     chars = len(json.dumps(result))
@@ -243,12 +254,15 @@ def explore(
     - **backlinks**: Notes that link TO this note. Shows what depends on or references this concept.
     - **similar**: Semantically similar notes that AREN'T already linked. Surfaces hidden
       connections - notes about related concepts that might be worth linking.
+      Empty if MEMEX_DISABLE_SEMANTIC=1.
 
     The combination helps you understand both the explicit graph structure (wikilinks)
     and implicit conceptual relationships (embeddings).
 
     Args:
-        note_path: Relative path within the vault
+        note_path: Path or title of the note. Can be:
+            - Full path: "plans/revision1.md" or "plans/revision1"
+            - Just title: "revision1" (if unique in vault; errors if ambiguous)
         vault: The vault containing the note
         concise: If True, return only paths/titles for linked notes (no full content).
                  If False (default), include full content for the main note.
@@ -266,20 +280,35 @@ def explore(
     index_all_vaults(conn, {vault: vaults[vault]}, on_progress=lambda _: None)
 
     note = get_note(conn, vault, note_path)
-    if not note:
-        conn.close()
-        return {"error": f"Note not found: {vault}/{note_path}"}
+    resolved_path = note.path if note else None
 
-    outlink_targets = get_outlinks(conn, vault, note_path)
-    note_name = path_to_note_name(note_path)
+    # When path has no "/" it could be a title - check for ambiguity
+    if "/" not in note_path:
+        title = note_path.removesuffix(".md")
+        matching_paths = get_files_with_title(conn, vault, title)
+        if len(matching_paths) > 1:
+            conn.close()
+            paths_str = ", ".join(matching_paths)
+            return {"error": f"Multiple notes with title '{title}': {paths_str}. Specify full path."}
+        # If no direct match but one title match, use it
+        if not note and len(matching_paths) == 1:
+            resolved_path = matching_paths[0]
+            note = get_note(conn, vault, resolved_path)
+
+    if not note or not resolved_path:
+        conn.close()
+        return {"error": f"Note not found: {note_path}"}
+
+    outlink_targets = get_outlinks(conn, vault, resolved_path)
+    note_name = path_to_note_name(resolved_path)
     backlink_paths = get_backlinks(conn, vault, note_name)
 
-    # Find semantically similar notes that aren't already linked
+    # Find semantically similar notes that aren't already linked (skip if semantic disabled)
     similar_notes: list[tuple[IndexedNote, float]] = []
-    embedding = get_note_embedding(conn, vault, note_path)
+    embedding = get_note_embedding(conn, vault, resolved_path) if is_semantic_enabled() else None
     if embedding is not None:
         candidates = search_semantic(conn, embedding, vault=vault, limit=10)  # fetch extra to filter
-        excluded_paths = {note_path} | set(backlink_paths)
+        excluded_paths = {resolved_path} | set(backlink_paths)
         for candidate, distance in candidates:
             if candidate.path not in excluded_paths:
                 similar_notes.append((candidate, distance))
@@ -333,6 +362,175 @@ def explore(
         chars // 4,
         elapsed,
     )
+    return result
+
+
+@mcp.tool()
+def rename(
+    note_path: str,
+    new_name: str,
+    vault: str,
+) -> dict:
+    """Rename a note and update all wikilinks pointing to it.
+
+    Renames the file on disk and updates all [[wikilinks]] in other notes that reference
+    the old name. This keeps the wikilink graph consistent after renaming.
+
+    Handles edge cases:
+    - Path-based links: [[subdir/note]] updated to [[subdir/newname]]
+    - Title-based links: [[note]] updated to [[newname]]
+    - Ambiguous links: When multiple files share a title, only path-based links are updated
+    - Case variants: [[Note]] and [[note]] both updated (matching Obsidian behavior)
+
+    Args:
+        note_path: Current path of the note to rename (extension .md is optional)
+        new_name: New filename (without path, without .md extension)
+        vault: The vault containing the note
+
+    Returns:
+        Dict with renamed path, updated files, and any warnings about skipped links.
+    """
+    import re
+
+    vaults = parse_vaults_env()
+    if not vaults:
+        return {"error": "No vaults configured. Set MEMEX_VAULTS env var."}
+
+    vault = resolve_vault_path(vault, vaults) or vault
+    if vault not in vaults:
+        return {"error": f"Vault '{vault}' not found. Available: {list(vaults.keys())}"}
+
+    vault_path = vaults[vault]
+    conn = get_connection()
+    index_all_vaults(conn, {vault: vault_path}, on_progress=lambda _: None)
+
+    # Resolve source note
+    note = get_note(conn, vault, note_path)
+    if not note:
+        conn.close()
+        return {"error": f"Note not found: {note_path}"}
+
+    old_path = note.path
+    old_title = path_to_note_name(old_path)
+    old_path_without_ext = old_path.removesuffix(".md")
+
+    # Build new path (preserve directory if any)
+    old_file_path = vault_path / old_path
+    new_filename = new_name if new_name.endswith(".md") else f"{new_name}.md"
+    new_path = str(Path(old_path).parent / new_filename)
+    if new_path.startswith("./"):
+        new_path = new_path[2:]
+    new_file_path = vault_path / new_path
+    new_title = new_name.removesuffix(".md")
+    new_path_without_ext = new_path.removesuffix(".md")
+
+    # Check target doesn't exist
+    if new_file_path.exists():
+        conn.close()
+        return {"error": f"Target already exists: {new_path}"}
+
+    # Find all links that resolve to this note
+    links = find_links_to_note(conn, vault, old_path)
+
+    # Check if this file is the "preferred" one for title-based resolution
+    # Obsidian prefers lowercase when multiple files have same title (different case)
+    files_with_same_title = get_files_with_title(conn, vault, old_title)
+    is_preferred_for_title = True
+    if len(files_with_same_title) > 1:
+        # Sort by lowercase preference (lowercase first), then alphabetically
+        sorted_files = sorted(files_with_same_title, key=lambda p: (p.lower() != p, p.lower()))
+        is_preferred_for_title = sorted_files[0] == old_path
+
+    # Check if this file is the "preferred" one for path-based resolution
+    # Same logic: prefer lowercase when multiple files have same path (different case)
+    files_with_same_path = get_files_with_path(conn, vault, old_path_without_ext)
+    is_preferred_for_path = True
+    if len(files_with_same_path) > 1:
+        sorted_files = sorted(files_with_same_path, key=lambda p: (p.lower() != p, p.lower()))
+        is_preferred_for_path = sorted_files[0] == old_path
+
+    # Group links by source file
+    links_by_source: dict[str, list[tuple[str, str]]] = {}
+    skipped_ambiguous: list[tuple[str, str]] = []
+
+    for source_path, target_raw, link_type in links:
+        if link_type in ("title", "title_ambiguous"):
+            if not is_preferred_for_title:
+                # This file isn't the preferred resolution target for title links
+                # (title links resolve to a different file with same name)
+                skipped_ambiguous.append((source_path, target_raw))
+                continue
+            # This file IS preferred, so title links resolve here - update them
+            links_by_source.setdefault(source_path, []).append((target_raw, "title"))
+            continue
+        if link_type in ("path", "path_ambiguous"):
+            if not is_preferred_for_path:
+                # This file isn't the preferred resolution target for path links
+                skipped_ambiguous.append((source_path, target_raw))
+                continue
+            # This file IS preferred, so path links resolve here - update them
+            links_by_source.setdefault(source_path, []).append((target_raw, "path"))
+            continue
+        # Unknown link type - skip safely
+        skipped_ambiguous.append((source_path, target_raw))
+
+    # Rename file on disk
+    old_file_path.rename(new_file_path)
+
+    # Update wikilinks in source files
+    updated_files = []
+    for source_path, link_list in links_by_source.items():
+        source_file = vault_path / source_path
+        if not source_file.exists():
+            continue
+
+        content = source_file.read_text(encoding="utf-8")
+        new_content = content
+
+        for target_raw, link_type in link_list:
+            if link_type == "path":
+                # Path-based link: [[subdir/note]] → [[subdir/newname]]
+                pattern = re.compile(
+                    r"\[\[" + re.escape(target_raw) + r"(\s*[#|][^\]]*)?(\]\])",
+                    re.IGNORECASE,
+                )
+                new_content = pattern.sub(f"[[{new_path_without_ext}\\1\\2", new_content)
+            else:
+                # Title-based link: [[note]] → [[newname]]
+                pattern = re.compile(
+                    r"\[\[" + re.escape(target_raw) + r"(\s*[#|][^\]]*)?(\]\])",
+                    re.IGNORECASE,
+                )
+                new_content = pattern.sub(f"[[{new_title}\\1\\2", new_content)
+
+        if new_content != content:
+            source_file.write_text(new_content, encoding="utf-8")
+            updated_files.append(source_path)
+
+    conn.close()
+
+    # Re-index affected files
+    conn = get_connection()
+    index_all_vaults(conn, {vault: vault_path}, on_progress=lambda _: None)
+    conn.close()
+
+    result: dict = {
+        "old_path": old_path,
+        "new_path": new_path,
+        "updated_files": updated_files,
+        "updated_count": len(updated_files),
+    }
+
+    if skipped_ambiguous:
+        result["skipped_ambiguous"] = [
+            {"source": src, "link": link} for src, link in skipped_ambiguous
+        ]
+        result["warning"] = (
+            f"Skipped {len(skipped_ambiguous)} ambiguous link(s). "
+            "These are title-based links where multiple files share the same title. "
+            "Update them manually or use path-based links."
+        )
+
     return result
 
 

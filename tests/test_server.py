@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 import memex_md_mcp.db as db_module
-from memex_md_mcp.server import resolve_vault_path, search
+from memex_md_mcp.server import explore, rename, resolve_vault_path, search
 
 
 @pytest.fixture
@@ -174,3 +174,453 @@ class TestVaultPathResolution:
         result = search(query="programming", vault=str(vault_env))
         # Should not have an error
         assert "error" not in result
+
+
+class TestSemanticDisabled:
+    """Tests for MEMEX_DISABLE_SEMANTIC=1 behavior."""
+
+    @pytest.fixture
+    def vault_env_no_semantic(self, temp_vault):
+        """Set up vault with semantic search disabled."""
+        with tempfile.TemporaryDirectory() as db_dir:
+            temp_db_path = Path(db_dir) / "test.db"
+            with (
+                patch.dict(os.environ, {"MEMEX_VAULTS": str(temp_vault), "MEMEX_DISABLE_SEMANTIC": "1"}),
+                patch.object(db_module, "DB_PATH", temp_db_path),
+            ):
+                yield temp_vault
+
+    def test_fts_works_when_semantic_disabled(self, vault_env_no_semantic):
+        """FTS still works when semantic is disabled."""
+        result = search(keywords=["OAuth"], limit=5, concise=False)
+
+        assert str(vault_env_no_semantic) in result
+        paths = result[str(vault_env_no_semantic)]
+        assert any("auth" in p["path"] for p in paths)
+
+    def test_query_ignored_when_semantic_disabled(self, vault_env_no_semantic):
+        """Query parameter is ignored with info message when semantic disabled."""
+        result = search(query="authentication", keywords=["OAuth"], limit=5, vault=str(vault_env_no_semantic))
+
+        assert "info" in result
+        assert "disabled" in result["info"].lower()
+
+    def test_explore_similar_empty_when_semantic_disabled(self, vault_env_no_semantic):
+        """Explore returns empty similar list when semantic disabled."""
+        result = explore(note_path="auth.md", vault=str(vault_env_no_semantic))
+
+        assert "error" not in result
+        assert result["similar"] == []
+
+
+class TestMdExtensionOptional:
+    """Tests for .md extension being optional in note paths."""
+
+    def test_explore_with_extension(self, vault_env):
+        """Explore works with .md extension."""
+        result = explore(note_path="auth.md", vault=str(vault_env))
+
+        assert "error" not in result
+        assert result["note"]["path"] == "auth.md"
+
+    def test_explore_without_extension(self, vault_env):
+        """Explore works without .md extension."""
+        result = explore(note_path="auth", vault=str(vault_env))
+
+        assert "error" not in result
+        assert result["note"]["path"] == "auth.md"
+
+    def test_explore_nonexistent_without_extension(self, vault_env):
+        """Explore returns error for nonexistent note without extension."""
+        result = explore(note_path="nonexistent", vault=str(vault_env))
+
+        assert "error" in result
+
+    def test_explore_by_title_unique(self, vault_env):
+        """Explore works with just title if unique in vault."""
+        result = explore(note_path="auth", vault=str(vault_env))
+
+        assert "error" not in result
+        assert result["note"]["path"] == "auth.md"
+
+    def test_explore_by_title_in_subdir(self, vault_env):
+        """Explore by title finds file in subdirectory."""
+        # Create a file in a subdirectory
+        subdir = vault_env / "subdir"
+        subdir.mkdir()
+        (subdir / "unique-note.md").write_text("# Unique Note\nContent here.")
+
+        result = explore(note_path="unique-note", vault=str(vault_env))
+
+        assert "error" not in result
+        assert result["note"]["path"] == "subdir/unique-note.md"
+
+    def test_explore_by_title_ambiguous_error(self, vault_env):
+        """Explore by title errors when multiple files have same title."""
+        # Create another file with same title as existing
+        subdir = vault_env / "subdir"
+        subdir.mkdir(exist_ok=True)
+        (subdir / "auth.md").write_text("# Auth\nAnother auth file.")
+
+        result = explore(note_path="auth", vault=str(vault_env))
+
+        assert "error" in result
+        assert "Multiple notes" in result["error"]
+        assert "auth.md" in result["error"]
+        assert "subdir/auth.md" in result["error"]
+
+
+class TestRename:
+    """Tests for rename tool."""
+
+    @pytest.fixture
+    def vault_with_links(self):
+        """Create a vault with notes that link to each other."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vault_path = Path(tmpdir)
+
+            # Create notes with wikilinks
+            (vault_path / "backend.md").write_text(
+                "# Backend\nSee also [[auth]] and [[database]]."
+            )
+            (vault_path / "auth.md").write_text(
+                "# Auth\nAuthentication module. Used by [[backend]]."
+            )
+            (vault_path / "database.md").write_text(
+                "# Database\nPostgreSQL setup."
+            )
+            (vault_path / "overview.md").write_text(
+                "# Overview\nMain components: [[backend]], [[auth]], [[database]]."
+            )
+
+            yield vault_path
+
+    @pytest.fixture
+    def vault_env_links(self, vault_with_links):
+        """Set up vault with links for rename testing."""
+        with tempfile.TemporaryDirectory() as db_dir:
+            temp_db_path = Path(db_dir) / "test.db"
+            with (
+                patch.dict(os.environ, {"MEMEX_VAULTS": str(vault_with_links)}),
+                patch.object(db_module, "DB_PATH", temp_db_path),
+            ):
+                yield vault_with_links
+
+    def test_rename_simple(self, vault_env_links):
+        """Rename a note without any backlinks."""
+        result = rename(note_path="database", new_name="postgres", vault=str(vault_env_links))
+
+        assert "error" not in result
+        assert result["old_path"] == "database.md"
+        assert result["new_path"] == "postgres.md"
+        assert (vault_env_links / "postgres.md").exists()
+        assert not (vault_env_links / "database.md").exists()
+
+    def test_rename_updates_backlinks(self, vault_env_links):
+        """Rename updates wikilinks in files that reference the renamed note."""
+        result = rename(note_path="auth.md", new_name="authentication", vault=str(vault_env_links))
+
+        assert "error" not in result
+        assert result["updated_count"] >= 1
+
+        # Check that backend.md now links to [[authentication]]
+        backend_content = (vault_env_links / "backend.md").read_text()
+        assert "[[authentication]]" in backend_content
+        assert "[[auth]]" not in backend_content
+
+        # Check that overview.md also updated
+        overview_content = (vault_env_links / "overview.md").read_text()
+        assert "[[authentication]]" in overview_content
+
+    def test_rename_target_exists_error(self, vault_env_links):
+        """Rename returns error if target already exists."""
+        result = rename(note_path="auth", new_name="backend", vault=str(vault_env_links))
+
+        assert "error" in result
+        assert "exists" in result["error"].lower()
+
+    def test_rename_source_not_found(self, vault_env_links):
+        """Rename returns error if source note doesn't exist."""
+        result = rename(note_path="nonexistent", new_name="something", vault=str(vault_env_links))
+
+        assert "error" in result
+        assert "not found" in result["error"].lower()
+
+    @pytest.fixture
+    def vault_with_complex_links(self):
+        """Create a vault with various wikilink formats."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vault_path = Path(tmpdir)
+
+            # Note with various link formats
+            (vault_path / "index.md").write_text(
+                "# Index\n"
+                "Simple link: [[target]]\n"
+                "With alias: [[target|Display Name]]\n"
+                "With heading: [[target#section]]\n"
+                "With both: [[target#section|Section Link]]\n"
+                "Case variant: [[Target]]\n"
+                "Block ref: [[target#^abc123]]\n"
+                "Block ref with alias: [[target#^abc123|Block Link]]\n"
+            )
+            (vault_path / "target.md").write_text("# Target\nThis is the target note.")
+
+            # Subdirectory structure
+            (vault_path / "subdir").mkdir()
+            (vault_path / "subdir" / "nested.md").write_text(
+                "# Nested\nLinks to [[target]] from subdir."
+            )
+
+            yield vault_path
+
+    @pytest.fixture
+    def vault_env_complex(self, vault_with_complex_links):
+        """Set up vault with complex links for testing."""
+        with tempfile.TemporaryDirectory() as db_dir:
+            temp_db_path = Path(db_dir) / "test.db"
+            with (
+                patch.dict(os.environ, {"MEMEX_VAULTS": str(vault_with_complex_links)}),
+                patch.object(db_module, "DB_PATH", temp_db_path),
+            ):
+                yield vault_with_complex_links
+
+    def test_rename_preserves_alias(self, vault_env_complex):
+        """Rename preserves display aliases in wikilinks."""
+        result = rename(note_path="target", new_name="destination", vault=str(vault_env_complex))
+
+        assert "error" not in result
+        content = (vault_env_complex / "index.md").read_text()
+        assert "[[destination|Display Name]]" in content
+
+    def test_rename_preserves_heading(self, vault_env_complex):
+        """Rename preserves heading references in wikilinks."""
+        result = rename(note_path="target", new_name="destination", vault=str(vault_env_complex))
+
+        assert "error" not in result
+        content = (vault_env_complex / "index.md").read_text()
+        assert "[[destination#section]]" in content
+
+    def test_rename_preserves_heading_and_alias(self, vault_env_complex):
+        """Rename preserves both heading and alias in wikilinks."""
+        result = rename(note_path="target", new_name="destination", vault=str(vault_env_complex))
+
+        assert "error" not in result
+        content = (vault_env_complex / "index.md").read_text()
+        assert "[[destination#section|Section Link]]" in content
+
+    def test_rename_case_insensitive_matching(self, vault_env_complex):
+        """Rename updates all case variants of wikilinks."""
+        result = rename(note_path="target", new_name="destination", vault=str(vault_env_complex))
+
+        assert "error" not in result
+        content = (vault_env_complex / "index.md").read_text()
+        # Both [[target]] and [[Target]] should be updated to [[destination]]
+        assert "[[target]]" not in content
+        assert "[[Target]]" not in content
+        # Should have multiple [[destination]] links now
+        assert content.count("[[destination") >= 2
+
+    def test_rename_updates_links_in_subdirs(self, vault_env_complex):
+        """Rename updates wikilinks in files in subdirectories."""
+        result = rename(note_path="target", new_name="destination", vault=str(vault_env_complex))
+
+        assert "error" not in result
+        nested_content = (vault_env_complex / "subdir" / "nested.md").read_text()
+        assert "[[destination]]" in nested_content
+        assert "[[target]]" not in nested_content
+
+    def test_rename_preserves_block_reference(self, vault_env_complex):
+        """Rename preserves block references like [[note#^blockid]]."""
+        result = rename(note_path="target", new_name="destination", vault=str(vault_env_complex))
+
+        assert "error" not in result
+        content = (vault_env_complex / "index.md").read_text()
+        assert "[[destination#^abc123]]" in content
+        assert "[[destination#^abc123|Block Link]]" in content
+
+
+class TestRenameEdgeCases:
+    """Tests for rename edge cases: path-based links, same-name files, ambiguity."""
+
+    @pytest.fixture
+    def vault_with_path_links(self):
+        """Vault with path-based wikilinks."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vault_path = Path(tmpdir)
+
+            # Create subdirectory structure
+            (vault_path / "docs").mkdir()
+            (vault_path / "docs" / "guide.md").write_text("# Guide\nThis is a guide.")
+
+            # Index file with both title and path-based links
+            (vault_path / "index.md").write_text(
+                "# Index\n"
+                "Title link: [[guide]]\n"
+                "Path link: [[docs/guide]]\n"
+                "Path with alias: [[docs/guide|The Guide]]\n"
+            )
+
+            yield vault_path
+
+    @pytest.fixture
+    def vault_env_path_links(self, vault_with_path_links):
+        """Set up vault with path-based links."""
+        with tempfile.TemporaryDirectory() as db_dir:
+            temp_db_path = Path(db_dir) / "test.db"
+            with (
+                patch.dict(os.environ, {"MEMEX_VAULTS": str(vault_with_path_links)}),
+                patch.object(db_module, "DB_PATH", temp_db_path),
+            ):
+                yield vault_with_path_links
+
+    def test_rename_updates_path_based_links(self, vault_env_path_links):
+        """Rename updates [[subdir/note]] style path-based links."""
+        result = rename(note_path="docs/guide", new_name="manual", vault=str(vault_env_path_links))
+
+        assert "error" not in result
+        content = (vault_env_path_links / "index.md").read_text()
+
+        # Path-based links should be updated with full path
+        assert "[[docs/manual]]" in content
+        assert "[[docs/manual|The Guide]]" in content
+        # Title-based link should also be updated
+        assert "[[manual]]" in content
+        # Old links should be gone
+        assert "[[guide]]" not in content
+        assert "[[docs/guide]]" not in content
+
+    @pytest.fixture
+    def vault_with_same_name_different_dirs(self):
+        """Vault with same filename in different directories."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vault_path = Path(tmpdir)
+
+            # Create two files with same name in different dirs
+            (vault_path / "frontend").mkdir()
+            (vault_path / "backend").mkdir()
+            (vault_path / "frontend" / "config.md").write_text("# Frontend Config")
+            (vault_path / "backend" / "config.md").write_text("# Backend Config")
+
+            # Index with various links
+            (vault_path / "index.md").write_text(
+                "# Index\n"
+                "Ambiguous: [[config]]\n"
+                "Frontend specific: [[frontend/config]]\n"
+                "Backend specific: [[backend/config]]\n"
+            )
+
+            yield vault_path
+
+    @pytest.fixture
+    def vault_env_same_name(self, vault_with_same_name_different_dirs):
+        """Set up vault with same-name files."""
+        with tempfile.TemporaryDirectory() as db_dir:
+            temp_db_path = Path(db_dir) / "test.db"
+            with (
+                patch.dict(os.environ, {"MEMEX_VAULTS": str(vault_with_same_name_different_dirs)}),
+                patch.object(db_module, "DB_PATH", temp_db_path),
+            ):
+                yield vault_with_same_name_different_dirs
+
+    def test_rename_with_ambiguous_title_skips_ambiguous_links(self, vault_env_same_name):
+        """When multiple files share a title, ambiguous title links are skipped."""
+        result = rename(
+            note_path="frontend/config", new_name="settings", vault=str(vault_env_same_name)
+        )
+
+        assert "error" not in result
+        content = (vault_env_same_name / "index.md").read_text()
+
+        # Path-based link should be updated
+        assert "[[frontend/settings]]" in content
+        assert "[[frontend/config]]" not in content
+
+        # Other path-based links unchanged
+        assert "[[backend/config]]" in content
+
+        # Ambiguous title link should be SKIPPED (not updated)
+        assert "[[config]]" in content
+
+        # Should have warning about skipped links
+        assert "skipped_ambiguous" in result or "warning" in result
+
+    def test_rename_updates_only_specific_path_link(self, vault_env_same_name):
+        """Renaming one file doesn't affect path links to other same-named files."""
+        result = rename(
+            note_path="backend/config", new_name="db-config", vault=str(vault_env_same_name)
+        )
+
+        assert "error" not in result
+        content = (vault_env_same_name / "index.md").read_text()
+
+        # Backend path link updated
+        assert "[[backend/db-config]]" in content
+        assert "[[backend/config]]" not in content
+
+        # Frontend path link unchanged
+        assert "[[frontend/config]]" in content
+
+    @pytest.fixture
+    def vault_with_case_variants(self):
+        """Vault with files that have same name but different casing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vault_path = Path(tmpdir)
+
+            # Create two files with same name, different case
+            # Note: This only works on case-sensitive filesystems (Linux)
+            (vault_path / "note.md").write_text("# Lowercase Note")
+            (vault_path / "Note.md").write_text("# Uppercase Note")
+
+            # Links to both
+            (vault_path / "index.md").write_text(
+                "# Index\n"
+                "Lowercase: [[note]]\n"
+                "Uppercase: [[Note]]\n"
+            )
+
+            yield vault_path
+
+    @pytest.fixture
+    def vault_env_case_variants(self, vault_with_case_variants):
+        """Set up vault with case-variant files."""
+        with tempfile.TemporaryDirectory() as db_dir:
+            temp_db_path = Path(db_dir) / "test.db"
+            with (
+                patch.dict(os.environ, {"MEMEX_VAULTS": str(vault_with_case_variants)}),
+                patch.object(db_module, "DB_PATH", temp_db_path),
+            ):
+                yield vault_with_case_variants
+
+    def test_rename_lowercase_preferred_file(self, vault_env_case_variants):
+        """Renaming the lowercase file (preferred) updates all title links."""
+        # Skip if filesystem is case-insensitive
+        if not (vault_env_case_variants / "Note.md").exists():
+            pytest.skip("Filesystem is case-insensitive")
+
+        result = rename(note_path="note.md", new_name="document", vault=str(vault_env_case_variants))
+
+        assert "error" not in result
+        content = (vault_env_case_variants / "index.md").read_text()
+
+        # Both [[note]] and [[Note]] should be updated (Obsidian resolves both to lowercase)
+        assert "[[document]]" in content
+        # Count should be 2 (both links updated)
+        assert content.count("[[document]]") == 2
+
+    def test_rename_uppercase_non_preferred_file(self, vault_env_case_variants):
+        """Renaming the uppercase file (not preferred) skips title links."""
+        # Skip if filesystem is case-insensitive
+        if not (vault_env_case_variants / "Note.md").exists():
+            pytest.skip("Filesystem is case-insensitive")
+
+        result = rename(note_path="Note.md", new_name="Document", vault=str(vault_env_case_variants))
+
+        assert "error" not in result
+        content = (vault_env_case_variants / "index.md").read_text()
+
+        # Title links should NOT be updated (they resolve to lowercase note.md, not Note.md)
+        # Both [[note]] and [[Note]] still exist
+        assert "[[note]]" in content or "[[Note]]" in content
+
+        # Should have warning about skipped links
+        assert "skipped_ambiguous" in result or "warning" in result

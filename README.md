@@ -4,7 +4,11 @@
 
 *[Memex](https://en.wikipedia.org/wiki/Memex): Vannevar Bush's 1945 concept of a "memory extender" - a device for storing and retrieving personal knowledge. The conceptual ancestor of personal wikis and second brains.*
 
-MCP server for semantic search over markdown vaults. Give your LLM persistent memory across sessions—its own knowledge base to grow, document findings, model your preferences, and recall past work.
+MCP server for searching and navigating markdown vaults. Point it at your Obsidian vault (or any markdown folder) and get semantic search, wikilink/backlink traversal, and note renaming with automatic link updates.
+
+**What memex is:** A search and navigation layer over your markdown files. SQLite with FTS5 for keyword search, [embeddinggemma](https://huggingface.co/google/embeddinggemma-300m) for semantic similarity, wikilink graph for backlinks.
+
+**What memex isn't:** An automatic memory system. It won't capture context or write notes for you. For that, check out [claude-mem](https://github.com/thedotmack/claude-mem) (automatic memory compression with hooks and summaries). Memex pairs well with workflow layers on top—see [my agent workflows](https://github.com/MaxWolf-01/agents) for an example using memex as the knowledge backend.
 
 ## Quick Start
 
@@ -53,6 +57,19 @@ Add to `~/.claude/mcp.json` (global) or `.mcp.json` (per-project):
 
 Multiple vault paths are colon-separated. Project `.mcp.json` **overrides** global config entirely (no merging), so list all vaults you need.
 
+### Optional: Disable Semantic Search
+
+If you only need wikilink navigation and keyword search (no GPU/embeddings):
+
+```json
+"env": {
+  "MEMEX_VAULTS": "...",
+  "MEMEX_DISABLE_SEMANTIC": "1"
+}
+```
+
+When disabled: `search()` only works with `keywords`, `explore()` returns empty `similar` list.
+
 ## Tools
 
 **search(query?, keywords?, vault?, limit=5, page=1, concise=True)** — semantic search over vaults.
@@ -72,11 +89,26 @@ search(keywords=["PostgreSQL"])  # FTS-only mode
 
 Returns outlinks (what it references), backlinks (what references it), and semantically similar notes not yet linked. Includes full content of the explored note (not neighbors). Outlinks include image embeds (`![[image.png]]`)—use Read tool to view them.
 
+`note_path` can be a full path or just the title (if unique in vault):
 ```
-explore("architecture/api-design.md", "/home/user/project/docs")
+explore("api-design", "/home/user/vault")              # by title (if unique)
+explore("architecture/api-design", "/home/user/vault") # by path
 ```
 
 **Typical workflow:** `search()` to find entry points → `explore()` promising results to read content + see connections.
+
+**rename(note_path, new_name, vault)** — rename a note and update all wikilinks.
+
+Renames the file and updates all `[[wikilinks]]` pointing to it. Handles edge cases:
+- Path-based links: `[[subdir/note]]` → `[[subdir/newname]]`
+- Title-based links: `[[note]]` → `[[newname]]`
+- Preserves aliases/headings: `[[note#section|Display]]` → `[[newname#section|Display]]`
+- Ambiguous links (multiple files share a name): skipped with warning
+
+```
+rename("old-name", "new-name", "/home/user/vault")
+rename("docs/guide", "manual", "/home/user/vault")  # also updates [[docs/guide]] links
+```
 
 **mcp_info()** — returns this README.
 
@@ -91,8 +123,7 @@ Add to your project's `CLAUDE.md` (adapt paths to your setup):
 You have access to markdown vaults via memex. Use them to find past work, discover connections, and document knowledge that helps future sessions.
 
 Vaults:
-- /home/max/repos/github/MaxWolf-01/claude-global-knowledge — Your global knowledge: cross-project learnings, user preferences, workflow insights
-- ./agent — /{knowledge, tasks} Project-specific: architecture decisions, conventions, debugging patterns, task files
+- ...
 
 Search tips:
 - Use 1-3 sentence questions, not keywords: "How does the auth flow handle token refresh?" beats "auth token refresh"
@@ -103,8 +134,7 @@ Search tips:
 Workflow: search() returns paths by default (concise) → explore() promising results to read content + see connections → Build context before implementation.
 ```
 
-For structured task management and knowledge archiving that leverage memex, see [`/task`](https://github.com/MaxWolf-01/dotfiles/blob/master/claude/commands/task.md) and [`/archive`](https://github.com/MaxWolf-01/dotfiles/blob/master/claude/commands/archive.md) — example workflows for autonomous, parallel (multi-clauded), yet reliable and verifiable work.
-For using this workflow, I also recommend turning off auto-compaction (you save soo much context) and increasing `MAX_MCP_OUTPUT_TOKENS": "50000"` from the default 25k in your claude settings.
+For how I use memex, see [my agent stuff](https://github.com/MaxWolf-01/agents).
 
 ## Benchmarks
 
@@ -127,12 +157,4 @@ make release-patch  # 0.2.6 -> 0.2.7, tag, push
 make release-minor  # 0.2.6 -> 0.3.0
 make release-major  # 0.2.6 -> 1.0.0
 ```
-
-## Roadmap
-
-- [ ] More thorough benchmarking
-- [ ] Ignore patterns?
-- [ ] Include workflow examples as skills? Currently I use them as slash commands. Claude 5/6 might be autonomous enough to apply them directly, and grow a memex vault largely unsupervised. 
-   - Actually, a step towards that will probably be agents managing other agents with this workflow.
-   - Also see https://github.com/anthropics/claude-code/issues/13115
 
