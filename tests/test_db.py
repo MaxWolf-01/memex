@@ -12,6 +12,7 @@ from memex_md_mcp.db import (
     get_indexed_mtimes,
     get_note,
     get_note_rowid,
+    get_notes_needing_embeddings,
     get_outlinks,
     init_db,
     resolve_wikilink,
@@ -328,3 +329,55 @@ class TestWikilinkResolution:
         assert ("target", ["target.md"]) in outlinks
         # Second link should be unresolved
         assert ("missing", []) in outlinks
+
+
+class TestEmbeddingHashTracking:
+    """Tests for embedding staleness detection via embedding_hash."""
+
+    def test_new_note_needs_embedding(self, conn, sample_note):
+        """Note without embedding_hash should need embedding."""
+        upsert_note(conn, "vault1", "note.md", sample_note, 1000.0, "hash1")
+
+        needs = get_notes_needing_embeddings(conn, "vault1")
+
+        assert "note.md" in needs
+        rowid, title, content, content_hash = needs["note.md"]
+        assert title == sample_note.title
+        assert content_hash == "hash1"
+
+    def test_embedded_note_not_returned(self, conn, sample_note):
+        """Note with matching embedding_hash should not need embedding."""
+        upsert_note(conn, "vault1", "note.md", sample_note, 1000.0, "hash1")
+        rowid = get_note_rowid(conn, "vault1", "note.md")
+        assert rowid is not None
+        embedding = np.zeros(768, dtype=np.float32)
+        upsert_embedding(conn, rowid, embedding, "hash1")
+
+        needs = get_notes_needing_embeddings(conn, "vault1")
+
+        assert "note.md" not in needs
+
+    def test_stale_embedding_returned(self, conn, sample_note):
+        """Note with mismatched embedding_hash should need re-embedding."""
+        upsert_note(conn, "vault1", "note.md", sample_note, 1000.0, "hash1")
+        rowid = get_note_rowid(conn, "vault1", "note.md")
+        assert rowid is not None
+        embedding = np.zeros(768, dtype=np.float32)
+        upsert_embedding(conn, rowid, embedding, "hash1")
+        # Simulate content change: update note with new hash
+        upsert_note(conn, "vault1", "note.md", sample_note, 2000.0, "hash2")
+
+        needs = get_notes_needing_embeddings(conn, "vault1")
+
+        assert "note.md" in needs
+        assert needs["note.md"][3] == "hash2"  # content_hash
+
+    def test_vault_scoped(self, conn, sample_note):
+        """Should only return notes from specified vault."""
+        upsert_note(conn, "vault1", "note.md", sample_note, 1000.0, "h1")
+        upsert_note(conn, "vault2", "note.md", sample_note, 1000.0, "h2")
+
+        needs = get_notes_needing_embeddings(conn, "vault1")
+
+        assert len(needs) == 1
+        assert "note.md" in needs
