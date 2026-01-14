@@ -1,10 +1,12 @@
 """Embedding model loading and text embedding."""
 
+import gc
 import logging
 import os
 import threading
 
 import numpy as np
+import torch
 from sentence_transformers import SentenceTransformer
 
 MODEL_NAME = "google/embeddinggemma-300m"
@@ -29,7 +31,11 @@ def _unload_model() -> None:
     with _lock:
         if _model is not None:
             logger.info("Unloading embedding model after idle timeout")
+            del _model
             _model = None
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         _unload_timer = None
 
 

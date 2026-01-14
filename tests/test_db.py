@@ -216,8 +216,8 @@ class TestSearchSemantic:
         rowid2 = get_note_rowid(conn, "vault2", "rust.md")
         assert rowid1 is not None
         assert rowid2 is not None
-        upsert_embedding(conn, rowid1, emb1)
-        upsert_embedding(conn, rowid2, emb2)
+        upsert_embedding(conn, rowid1, emb1, "hash1")
+        upsert_embedding(conn, rowid2, emb2, "hash2")
 
         return {"emb1": emb1, "emb2": emb2}
 

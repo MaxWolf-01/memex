@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS notes (
     content TEXT NOT NULL,
     mtime REAL NOT NULL,
     content_hash TEXT NOT NULL,
+    embedding_hash TEXT,         -- NULL = never embedded, != content_hash = stale
     PRIMARY KEY (path, vault)
 );
 
@@ -115,6 +116,10 @@ def init_db(conn: sqlite3.Connection) -> None:
     """Initialize database schema."""
     conn.executescript(SCHEMA)
     conn.executescript(VEC_SCHEMA)
+    # Migration: add embedding_hash column if missing (for existing DBs)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(notes)").fetchall()}
+    if "embedding_hash" not in cols:
+        conn.execute("ALTER TABLE notes ADD COLUMN embedding_hash TEXT")
     conn.commit()
 
 
@@ -198,6 +203,19 @@ def get_indexed_mtimes(conn: sqlite3.Connection, vault: str) -> dict[str, float]
     """Get mtime for all notes in a vault. For staleness checking."""
     rows = conn.execute("SELECT path, mtime FROM notes WHERE vault = ?", (vault,)).fetchall()
     return {row["path"]: row["mtime"] for row in rows}
+
+
+def get_notes_needing_embeddings(conn: sqlite3.Connection, vault: str) -> dict[str, tuple[int, str, str, str]]:
+    """Get notes with missing or stale embeddings. Returns {path: (rowid, title, content, content_hash)}."""
+    rows = conn.execute(
+        """
+        SELECT rowid, path, title, content, content_hash
+        FROM notes
+        WHERE vault = ? AND (embedding_hash IS NULL OR embedding_hash != content_hash)
+        """,
+        (vault,),
+    ).fetchall()
+    return {row["path"]: (row["rowid"], row["title"], row["content"], row["content_hash"]) for row in rows}
 
 
 def list_notes(conn: sqlite3.Connection, vault: str | None = None, limit: int | None = None) -> list[IndexedNote]:
@@ -410,13 +428,14 @@ def find_links_to_note(
     return results
 
 
-def upsert_embedding(conn: sqlite3.Connection, note_rowid: int, embedding: np.ndarray) -> None:
-    """Insert or update embedding for a note."""
+def upsert_embedding(conn: sqlite3.Connection, note_rowid: int, embedding: np.ndarray, content_hash: str) -> None:
+    """Insert or update embedding for a note and mark it as up-to-date."""
     conn.execute("DELETE FROM notes_vec WHERE note_rowid = ?", (note_rowid,))
     conn.execute(
         "INSERT INTO notes_vec (note_rowid, embedding) VALUES (?, ?)",
         (note_rowid, embedding.astype(np.float32)),
     )
+    conn.execute("UPDATE notes SET embedding_hash = ? WHERE rowid = ?", (content_hash, note_rowid))
     conn.commit()
 
 
