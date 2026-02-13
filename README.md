@@ -1,151 +1,102 @@
-# memex-md-mcp
+# memex-md
 
 *You like Obsidian? Your LLM will love it too.*
 
 *[Memex](https://en.wikipedia.org/wiki/Memex): Vannevar Bush's 1945 concept of a "memory extender" - a device for storing and retrieving personal knowledge. The conceptual ancestor of personal wikis and second brains.*
 
-MCP server for searching and navigating markdown vaults. Point it at your Obsidian vault (or any markdown folder) and get semantic search, wikilink/backlink traversal, and note renaming with automatic link updates.
-
-**What memex is:** A search and navigation layer over your markdown files. SQLite with FTS5 for keyword search, [embeddinggemma](https://huggingface.co/google/embeddinggemma-300m) for semantic similarity, wikilink graph for backlinks.
-
-**What memex isn't:** An automatic memory system. It won't capture context or write notes for you. For that, check out [claude-mem](https://github.com/thedotmack/claude-mem) (automatic memory compression with hooks and summaries). Memex pairs well with workflow layers on top—see [my agent workflows](https://github.com/MaxWolf-01/agents) for an example using memex as the knowledge backend.
+Semantic search and wikilink graph traversal for markdown vaults. Uses any [sentence-transformers](https://sbert.net/) model. Point it at your Obsidian vault (or any markdown folder).
 
 ## Quick Start
 
 ```bash
-claude mcp add memex -- uvx --from 'memex-md-mcp==1.*' memex-md-mcp
+uvx memex-md --help
+
+memex vault:add personal ~/notes ~/journal
+memex search "How does the auth flow handle token refresh?" -v personal
+memex explore auth personal
 ```
 
-Then ask Claude to help configure your vaults - it has `mcp_info()` which explains everything. Or manually edit your settings (see Configuration below).
+For a memex skill, see [my agent workflows](https://github.com/MaxWolf-01/agents).
 
-**Version note:** The above pins to the latest 1.x release for stability. For bleeding edge, use `memex-md-mcp@latest`—but watch the repo for releases, since major bumps may require deleting your index (`~/.local/share/memex-md-mcp/memex.db`).
+## How It Works
 
-## What This Does
+A **vault** is a named collection of directories. Each vault has its own embedding model and SQLite index (`~/.local/share/memex-md/<vault-name>/index.db`).
 
-Memex gives Claude read access to your markdown vaults. It creates a local index at `~/.local/share/memex-md-mcp/memex.db` and logs to `~/.local/share/memex-md-mcp/memex.log`. The index contains:
+The index contains:
 
-- Full-text search index (FTS5) for keyword matching
-- Embeddings (google/embeddinggemma-300m) for semantic similarity
-- Wikilink graph for backlink queries
+- Embeddings for semantic similarity (default: [embeddinggemma-300m](https://huggingface.co/google/embeddinggemma-300m))
+- Wikilink graph for backlink/outlink queries
 - Extracted frontmatter (aliases, tags)
 
-On each query, memex checks file mtimes and re-indexes any changed files.
+Indexing is incremental — on each command, only files with changed mtimes are re-indexed. Hidden directories (`.obsidian`, `.trash`, `.git`, etc.) are excluded.
 
-**Note:** Initial indexing requires embedding computation. Example: ~3800 notes took ~7 minutes on an RTX 3070 Ti. Subsequent queries only re-index changed files and are fast.
-
-Hidden directories (`.obsidian`, `.trash`, `.git`, etc.) are excluded from indexing.
-
-Writing to notes happens through Claude Code's normal file tools. 
+**Note:** Initial indexing requires embedding computation. Example: ~3800 notes took ~7 minutes on an RTX 3070 Ti.
 
 ## Configuration
 
-Add to `~/.claude/mcp.json` (global) or `.mcp.json` (per-project):
+Vaults are configured via CLI. Config lives at `~/.config/memex/config.toml`.
 
-```json
-{
-  "mcpServers": {
-    "memex": {
-      "command": "uvx",
-      "args": ["memex-md-mcp@latest"],
-      "env": {
-        "MEMEX_VAULTS": "/home/user/knowledge:/home/user/project/docs"
-      }
-    }
-  }
-}
+```bash
+memex vault:add personal ~/notes ~/journal
+memex vault:add work ~/work-docs --model some/other-model
+memex vault:list
+memex vault:info personal
+memex vault:remove personal --path ~/journal   # remove one path
+memex vault:remove work                        # remove entire vault
 ```
 
-Multiple vault paths are colon-separated. Project `.mcp.json` **overrides** global config entirely (no merging), so list all vaults you need.
+Re-add a vault with `--model` to change its embedding model (triggers re-embedding). Use `--model none` to disable semantic search (wikilink navigation only).
 
-### Optional: Disable Semantic Search
+## Commands
 
-If you only need wikilink navigation and keyword search (no GPU/embeddings):
-
-```json
-"env": {
-  "MEMEX_VAULTS": "...",
-  "MEMEX_DISABLE_SEMANTIC": "1"
-}
-```
-
-When disabled: `search()` only works with `keywords`, `explore()` returns empty `similar` list.
-
-## Tools
-
-**search(query?, keywords?, vault?, limit=5, page=1, concise=True)** — semantic search over vaults.
-
-- `query`: Describe what you're looking for in natural language. Use 1-3 sentences, question format works well. If omitted, runs FTS-only mode with keywords.
-- `keywords`: Optional list of exact terms to boost. Required if query is omitted.
-- `page`: Page number for pagination (1-indexed).
-- `concise`: Returns only paths by default. Use `concise=False` for full content.
+### search
 
 ```
-search("What authentication approach did we decide on? I remember we discussed OAuth.")
-search("How does the caching layer handle invalidation?", keywords=["Redis", "TTL"])
-search(keywords=["PostgreSQL"])  # FTS-only mode
+memex search "How does the auth flow handle token refresh?" -v personal
+memex search "What approaches did we consider for caching?" -v work --full
 ```
 
-**explore(note_path, vault, concise=False)** — graph traversal from a note.
+Embeds the query and ranks indexed notes by cosine distance. Natural language questions of a few sentences tend to work well.
 
-Returns outlinks (what it references), backlinks (what references it), and semantically similar notes not yet linked. Includes full content of the explored note (not neighbors). Outlinks include image embeds (`![[image.png]]`)—use Read tool to view them.
+| Flag | Description |
+|------|-------------|
+| `-v`, `--vault` | Search a specific vault (default: all) |
+| `-n`, `--limit` | Max results (default: 5) |
+| `-p`, `--page` | Pagination (default: 1) |
+| `-f`, `--full` | Include note content (default: paths only) |
 
-`note_path` can be a full path or just the title (if unique in vault):
-```
-explore("api-design", "/home/user/vault")              # by title (if unique)
-explore("architecture/api-design", "/home/user/vault") # by path
-```
-
-**Typical workflow:** `search()` to find entry points → `explore()` promising results to read content + see connections.
-
-**rename(note_path, new_name, vault)** — rename a note and update all wikilinks.
-
-Renames the file and updates all `[[wikilinks]]` pointing to it. Handles edge cases:
-- Path-based links: `[[subdir/note]]` → `[[subdir/newname]]`
-- Title-based links: `[[note]]` → `[[newname]]`
-- Preserves aliases/headings: `[[note#section|Display]]` → `[[newname#section|Display]]`
-- Ambiguous links (multiple files share a name): skipped with warning
+### explore
 
 ```
-rename("old-name", "new-name", "/home/user/vault")
-rename("docs/guide", "manual", "/home/user/vault")  # also updates [[docs/guide]] links
+memex explore auth personal
+memex explore docs/api-design work --full
 ```
 
-**mcp_info()** — returns this README.
+Shows a note's outlinks (`[[wikilinks]]`), backlinks, and semantically similar notes.
 
+`note_path` can be a title (`auth`) or path (`docs/auth.md`). Titles must be unique in the vault.
 
-## Workflow Integration
+| Flag | Description |
+|------|-------------|
+| `-f`, `--full` | Include note content and metadata (default: graph only) |
 
-Add to your project's `CLAUDE.md` (adapt paths to your setup):
+### rename
 
-```markdown
-# Memex MCP
-
-You have access to markdown vaults via memex. Use them to find past work, discover connections, and document knowledge that helps future sessions.
-
-Vaults:
-- ...
-
-Search tips:
-- Use 1-3 sentence questions, not keywords: "How does the auth flow handle token refresh?" beats "auth token refresh"
-- Mention key terms explicitly in your query
-- For exact term lookup, use keywords parameter with a focused query
-- For precise "find this exact file/string" needs, use grep/rg instead — memex is for exploration
-
-Workflow: search() returns paths by default (concise) → explore() promising results to read content + see connections → Build context before implementation.
+```
+memex rename old-name new-name personal
+memex rename docs/guide manual work
 ```
 
-For how I use memex, see [my agent stuff](https://github.com/MaxWolf-01/agents).
+Renames a note file and updates all `[[wikilinks]]` pointing to it. Handles path links, title links, aliases, and heading refs. Ambiguous links (multiple files share a name) are skipped with warning.
 
-## Benchmarks
+### index
 
-Performance:
+```
+memex index
+memex index -v personal
+```
 
-- For now mostly my own vibes, still developing a proper workflow around this.
-- So far I only tested semantic and FTS search in isolation on my 3.8k note Obsidian vault to tune it.
-
-Speed:
-- Initial indexing: ~7 minutes for ~3800 notes (RTX 3070 Ti)
-- Subsequent queries: ~instant
+Trigger indexing. Runs automatically before search/explore.
 
 ## Development
 
@@ -153,8 +104,8 @@ Speed:
 uv sync
 make check          # ruff + ty
 make test           # pytest
-make release-patch  # 0.2.6 -> 0.2.7, tag, push
-make release-minor  # 0.2.6 -> 0.3.0
-make release-major  # 0.2.6 -> 1.0.0
+make release-patch  # 1.0.0 -> 1.0.1, tag, push
+make release-minor  # 1.0.0 -> 1.1.0
+make release-major  # 1.0.0 -> 2.0.0
 ```
 

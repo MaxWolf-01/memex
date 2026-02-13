@@ -6,8 +6,10 @@ import time
 import pytest
 import sqlite_vec
 
-from memex_md_mcp.db import get_note, init_db, search_fts
-from memex_md_mcp.indexer import content_hash, discover_files, index_all_vaults, index_vault
+from memex_md.db import get_note, init_db
+from memex_md.indexer import content_hash, discover_files, index_root, index_vault
+
+EMBEDDING_DIM = 768
 
 
 @pytest.fixture
@@ -17,7 +19,7 @@ def conn():
     connection.enable_load_extension(True)
     sqlite_vec.load(connection)
     connection.enable_load_extension(False)
-    init_db(connection)
+    init_db(connection, model_name="test-model", embedding_dim=EMBEDDING_DIM)
     yield connection
     connection.close()
 
@@ -35,7 +37,6 @@ def temp_vault(tmp_path):
     subfolder.mkdir()
     (subfolder / "nested.md").write_text("# Nested\n\nNested content [[note1]].")
 
-    # Non-markdown file should be ignored
     (vault / "readme.txt").write_text("Ignore me")
 
     return vault
@@ -71,56 +72,47 @@ class TestDiscoverFiles:
             assert mtime > 0
 
 
-class TestIndexVault:
+class TestIndexRoot:
     def test_indexes_all_files(self, conn, temp_vault):
-        stats = index_vault(conn, "test", temp_vault)
+        stats = index_root(conn, temp_vault)
 
         assert stats.added == 3
         assert stats.updated == 0
         assert stats.deleted == 0
 
     def test_detects_changes(self, conn, temp_vault):
-        index_vault(conn, "test", temp_vault)
+        index_root(conn, temp_vault)
 
-        # Modify a file (ensure mtime changes)
         time.sleep(0.01)
         (temp_vault / "note1.md").write_text("# Note 1\n\nUpdated content.")
 
-        stats = index_vault(conn, "test", temp_vault)
+        stats = index_root(conn, temp_vault)
 
         assert stats.added == 0
         assert stats.updated == 1
         assert stats.unchanged == 2
 
     def test_detects_deletions(self, conn, temp_vault):
-        index_vault(conn, "test", temp_vault)
+        index_root(conn, temp_vault)
 
         (temp_vault / "note1.md").unlink()
 
-        stats = index_vault(conn, "test", temp_vault)
+        stats = index_root(conn, temp_vault)
 
         assert stats.deleted == 1
-        assert get_note(conn, "test", "note1.md") is None
+        assert get_note(conn, "note1.md", root=str(temp_vault)) is None
 
     def test_detects_new_files(self, conn, temp_vault):
-        index_vault(conn, "test", temp_vault)
+        index_root(conn, temp_vault)
 
         (temp_vault / "new.md").write_text("# New\n\nNew content.")
 
-        stats = index_vault(conn, "test", temp_vault)
+        stats = index_root(conn, temp_vault)
 
         assert stats.added == 1
 
-    def test_content_searchable_after_index(self, conn, temp_vault):
-        index_vault(conn, "test", temp_vault)
-
-        results = search_fts(conn, "python")
-
-        assert len(results) == 1
-        assert results[0].path == "note1.md"
-
     def test_wikilinks_indexed(self, conn, temp_vault):
-        index_vault(conn, "test", temp_vault)
+        index_root(conn, temp_vault)
 
         links = conn.execute(
             "SELECT target_raw FROM wikilinks WHERE source_path = ?", ("subfolder/nested.md",)
@@ -130,26 +122,23 @@ class TestIndexVault:
         assert links[0]["target_raw"] == "note1"
 
 
-class TestIndexAllVaults:
-    def test_indexes_multiple_vaults(self, conn, tmp_path):
-        vault1 = tmp_path / "vault1"
-        vault1.mkdir()
-        (vault1 / "note.md").write_text("Vault 1 content")
+class TestIndexVault:
+    def test_indexes_multiple_roots(self, conn, tmp_path):
+        root1 = tmp_path / "root1"
+        root1.mkdir()
+        (root1 / "note.md").write_text("Root 1 content")
 
-        vault2 = tmp_path / "vault2"
-        vault2.mkdir()
-        (vault2 / "note.md").write_text("Vault 2 content")
+        root2 = tmp_path / "root2"
+        root2.mkdir()
+        (root2 / "note.md").write_text("Root 2 content")
 
-        results = index_all_vaults(conn, {"v1": vault1, "v2": vault2})
+        stats = index_vault(conn, [root1, root2])
 
-        assert "v1" in results
-        assert "v2" in results
-        assert results["v1"].added == 1
-        assert results["v2"].added == 1
+        assert stats.added == 2
 
-    def test_handles_missing_vault(self, conn, tmp_path):
+    def test_handles_missing_root(self, conn, tmp_path):
         missing = tmp_path / "does-not-exist"
 
-        results = index_all_vaults(conn, {"missing": missing})
+        stats = index_vault(conn, [missing])
 
-        assert len(results["missing"].errors) == 1
+        assert len(stats.errors) == 1

@@ -4,7 +4,7 @@ import tempfile
 
 import pytest
 
-from memex_md_mcp.parser import (
+from memex_md.parser import (
     TAG_PATTERN,
     WIKILINK_PATTERN,
     parse_note,

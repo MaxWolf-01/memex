@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from sqlite3 import Connection
 
-from memex_md_mcp.db import (
+from memex_md.db import (
     delete_note,
     get_indexed_mtimes,
     get_notes_needing_embeddings,
@@ -16,9 +16,8 @@ from memex_md_mcp.db import (
     upsert_embedding,
     upsert_note,
 )
-from memex_md_mcp.embeddings import embed_text, is_semantic_enabled
-from memex_md_mcp.logging import get_logger
-from memex_md_mcp.parser import parse_note
+from memex_md.logging import get_logger
+from memex_md.parser import parse_note
 
 log = get_logger()
 
@@ -47,41 +46,34 @@ def content_hash(content: str) -> str:
 
 
 def discover_files(vault_path: Path) -> dict[str, float]:
-    """Find all .md files in vault, return {relative_path: mtime}.
+    """Find all .md files in directory, return {relative_path: mtime}.
 
     Excludes hidden directories (starting with '.') like .obsidian, .trash, .git.
     """
     files = {}
-    for root, dirs, filenames in os.walk(vault_path):
+    for root_dir, dirs, filenames in os.walk(vault_path):
         dirs[:] = [d for d in dirs if not d.startswith(".")]
         for filename in filenames:
             if not filename.endswith(".md"):
                 continue
-            filepath = Path(root) / filename
+            filepath = Path(root_dir) / filename
             rel_path = str(filepath.relative_to(vault_path))
             files[rel_path] = filepath.stat().st_mtime
     return files
 
 
-def index_vault(
+def index_root(
     conn: Connection,
-    vault_id: str,
-    vault_path: Path,
+    root_path: Path,
     on_progress: Callable[[str], None] | None = None,
 ) -> IndexStats:
-    """Index a single vault, updating only stale files.
-
-    Args:
-        conn: Database connection (must already have schema initialized)
-        vault_id: Identifier for this vault (used in DB)
-        vault_path: Absolute path to vault directory
-        on_progress: Optional callback for progress messages
-    """
+    """Index a single root directory within a vault."""
     start_time = time.monotonic()
     stats = IndexStats()
+    root_str = str(root_path)
 
-    disk_files = discover_files(vault_path)
-    indexed_mtimes = get_indexed_mtimes(conn, vault_id)
+    disk_files = discover_files(root_path)
+    indexed_mtimes = get_indexed_mtimes(conn, root_str)
 
     disk_paths = set(disk_files.keys())
     indexed_paths = set(indexed_mtimes.keys())
@@ -99,17 +91,17 @@ def index_vault(
     total = len(to_index)
 
     if total > 0 and on_progress:
-        on_progress(f"Indexing {total} files in {vault_id}...")
+        on_progress(f"Indexing {total} files in {root_path}...")
 
     for i, rel_path in enumerate(sorted(to_index)):
-        filepath = vault_path / rel_path
+        filepath = root_path / rel_path
         filename = filepath.name
 
         try:
             note = parse_note(str(filepath), filename)
             mtime = disk_files[rel_path]
             chash = content_hash(note.content)
-            upsert_note(conn, vault_id, rel_path, note, mtime, chash)
+            upsert_note(conn, root_str, rel_path, note, mtime, chash)
 
             if rel_path in new_paths:
                 stats.added += 1
@@ -118,33 +110,20 @@ def index_vault(
 
         except Exception as e:
             stats.errors.append(f"{rel_path}: {e}")
-            log.error("Index error in '%s': %s: %s", vault_id, rel_path, e)
+            log.error("Index error in '%s': %s: %s", root_str, rel_path, e)
 
-        # Progress every ~10% for large vaults
         if on_progress and total >= 10 and (i + 1) % max(1, total // 10) == 0:
             on_progress(f"  {i + 1}/{total} indexed")
 
-    # Delete removed files
     for rel_path in deleted_paths:
-        delete_note(conn, vault_id, rel_path)
+        delete_note(conn, root_str, rel_path)
         stats.deleted += 1
-
-    # Embed notes with missing or stale embeddings
-    if is_semantic_enabled():
-        needs_embedding = get_notes_needing_embeddings(conn, vault_id)
-        if needs_embedding and on_progress:
-            on_progress(f"Embedding {len(needs_embedding)} notes in {vault_id}...")
-        for _path, (rowid, title, content, chash) in needs_embedding.items():
-            # Include title in embedding to handle empty notes and improve single-keyword queries; "#" might be more in-distribution for title, haven't benchmarked
-            text_to_embed = f"# {title}\n{content}"
-            embedding = embed_text(text_to_embed)
-            upsert_embedding(conn, rowid, embedding, chash)
 
     elapsed = time.monotonic() - start_time
     if stats.total_processed > 0:
         log.info(
             "Indexed '%s': +%d new, ~%d updated, -%d deleted (%d total) in %.2fs",
-            vault_id,
+            root_str,
             stats.added,
             stats.updated,
             stats.deleted,
@@ -155,32 +134,41 @@ def index_vault(
     return stats
 
 
-def index_all_vaults(
+def index_vault(
     conn: Connection,
-    vaults: dict[str, Path],
+    roots: list[Path],
+    model_name: str | None = None,
+    embedding_dim: int | None = None,
     on_progress: Callable[[str], None] | None = None,
-) -> dict[str, IndexStats]:
-    """Index all configured vaults.
+) -> IndexStats:
+    """Index all roots in a vault. Handles DB init and embedding."""
+    init_db(conn, model_name, embedding_dim)
 
-    Args:
-        conn: Database connection
-        vaults: Mapping of vault_id -> vault_path
-        on_progress: Optional callback for progress messages
-    """
-    init_db(conn)
-    results = {}
-
-    for vault_id, vault_path in vaults.items():
-        if not vault_path.exists():
+    combined = IndexStats()
+    for root_path in roots:
+        if not root_path.exists():
             if on_progress:
-                on_progress(f"Vault not found: {vault_path}")
-            results[vault_id] = IndexStats(errors=[f"Vault path does not exist: {vault_path}"])
+                on_progress(f"Root not found: {root_path}")
+            combined.errors.append(f"Root path does not exist: {root_path}")
             continue
 
-        stats = index_vault(conn, vault_id, vault_path, on_progress)
-        results[vault_id] = stats
+        stats = index_root(conn, root_path, on_progress)
+        combined.added += stats.added
+        combined.updated += stats.updated
+        combined.deleted += stats.deleted
+        combined.unchanged += stats.unchanged
+        combined.errors.extend(stats.errors)
 
-        if on_progress and stats.total_processed > 0:
-            on_progress(f"{vault_id}: +{stats.added} ~{stats.updated} -{stats.deleted} ({stats.unchanged} unchanged)")
+    # Embed notes with missing or stale embeddings
+    if model_name and model_name.lower() != "none":
+        from memex_md.embeddings import embed_text as _embed_text
 
-    return results
+        needs_embedding = get_notes_needing_embeddings(conn)
+        if needs_embedding and on_progress:
+            on_progress(f"Embedding {len(needs_embedding)} notes...")
+        for _key, (rowid, _root, title, content, chash) in needs_embedding.items():
+            text_to_embed = f"# {title}\n{content}"
+            embedding = _embed_text(text_to_embed, model_name)
+            upsert_embedding(conn, rowid, embedding, chash)
+
+    return combined

@@ -6,7 +6,7 @@ from importlib.metadata import version
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-LOG_DIR = Path.home() / ".local" / "share" / "memex-md-mcp"
+LOG_DIR = Path.home() / ".local" / "share" / "memex-md"
 LOG_FILE = LOG_DIR / "memex.log"
 MAX_BYTES = 5 * 1024 * 1024
 
@@ -32,6 +32,6 @@ def get_logger() -> logging.Logger:
 
     vaults = os.environ.get("MEMEX_VAULTS", "")
     cwd = os.getcwd()
-    logger.info("memex v%s started in %s, vaults: %s", version("memex-md-mcp"), cwd, vaults or "(none)")
+    logger.info("memex v%s started in %s, vaults: %s", version("memex-md"), cwd, vaults or "(none)")
 
     return logger
