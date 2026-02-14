@@ -10,10 +10,17 @@ Semantic search and wikilink graph traversal for markdown vaults. Uses any [sent
 
 ```bash
 uvx memex-md --help
+```
+or
+```bash
+uv tool install memex-md
+```
 
-memex vault:add personal ~/notes ~/journal
-memex search "How does the auth flow handle token refresh?" -v personal
-memex explore auth personal
+If installed, you can run `memex` directly, or via the alias `mx`:
+```
+mx vault:add personal ~/notes ~/journal
+mx search "How does the auth flow handle token refresh?" -v personal
+mx explore auth personal
 ```
 
 For a memex skill, see [my agent workflows](https://github.com/MaxWolf-01/agents).
@@ -37,12 +44,12 @@ Indexing is incremental — on each command, only files with changed mtimes are 
 Vaults are configured via CLI. Config lives at `~/.config/memex/config.toml`.
 
 ```bash
-memex vault:add personal ~/notes ~/journal
-memex vault:add work ~/work-docs --model some/other-model
-memex vault:list
-memex vault:info personal
-memex vault:remove personal --path ~/journal   # remove one path
-memex vault:remove work                        # remove entire vault
+mx vault:add personal ~/notes ~/journal
+mx vault:add work ~/work-docs --model some/other-model
+mx vault:list
+mx vault:info personal
+mx vault:remove personal --path ~/journal   # remove one path
+mx vault:remove work                        # remove entire vault
 ```
 
 Re-add a vault with `--model` to change its embedding model (triggers re-embedding). Use `--model none` to disable semantic search (wikilink navigation only).
@@ -52,8 +59,8 @@ Re-add a vault with `--model` to change its embedding model (triggers re-embeddi
 ### search
 
 ```
-memex search "How does the auth flow handle token refresh?" -v personal
-memex search "What approaches did we consider for caching?" -v work --full
+mx search "How does the auth flow handle token refresh?" -v personal
+mx search "What approaches did we consider for caching?" -v work --full
 ```
 
 Embeds the query and ranks indexed notes by cosine distance. Natural language questions of a few sentences tend to work well.
@@ -68,8 +75,8 @@ Embeds the query and ranks indexed notes by cosine distance. Natural language qu
 ### explore
 
 ```
-memex explore auth personal
-memex explore docs/api-design work --full
+mx explore auth personal
+mx explore docs/api-design work --full
 ```
 
 Shows a note's outlinks (`[[wikilinks]]`), backlinks, and semantically similar notes.
@@ -83,8 +90,8 @@ Shows a note's outlinks (`[[wikilinks]]`), backlinks, and semantically similar n
 ### rename
 
 ```
-memex rename old-name new-name personal
-memex rename docs/guide manual work
+mx rename old-name new-name personal
+mx rename docs/guide manual work
 ```
 
 Renames a note file and updates all `[[wikilinks]]` pointing to it. Handles path links, title links, aliases, and heading refs. Ambiguous links (multiple files share a name) are skipped with warning.
@@ -92,8 +99,8 @@ Renames a note file and updates all `[[wikilinks]]` pointing to it. Handles path
 ### index
 
 ```
-memex index
-memex index -v personal
+mx index
+mx index -v personal
 ```
 
 Trigger indexing. Runs automatically before search/explore.
