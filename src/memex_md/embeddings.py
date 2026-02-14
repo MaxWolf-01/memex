@@ -1,9 +1,14 @@
 """Embedding model loading and text embedding."""
 
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +20,8 @@ def get_model(model_name: str) -> SentenceTransformer:
     """Load the specified model. Caches one model at a time — reloads on name change."""
     global _model, _model_name
     if _model is None or _model_name != model_name:
+        from sentence_transformers import SentenceTransformer
+
         logger.info("Loading embedding model: %s", model_name)
         _model = SentenceTransformer(model_name)
         _model_name = model_name
