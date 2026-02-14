@@ -35,6 +35,12 @@ log = get_logger()
 
 
 def main() -> None:
+    if len(sys.argv) == 2 and sys.argv[1] in ("--version", "-V"):
+        from importlib.metadata import version
+
+        print(version("memex-md"))
+        return
+
     tyro.extras.subcommand_cli_from_dict(
         {
             "search": search,
