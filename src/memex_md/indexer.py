@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -161,14 +162,26 @@ def index_vault(
 
     # Embed notes with missing or stale embeddings
     if model_name and model_name.lower() != "none":
-        from memex_md.embeddings import embed_text as _embed_text
+        from memex_md.embeddings import embed_texts as _embed_texts
 
-        needs_embedding = get_notes_needing_embeddings(conn)
-        if needs_embedding and on_progress:
-            on_progress(f"Embedding {len(needs_embedding)} notes...")
-        for _key, (rowid, _root, title, content, chash) in needs_embedding.items():
-            text_to_embed = f"# {title}\n{content}"
-            embedding = _embed_text(text_to_embed, model_name)
-            upsert_embedding(conn, rowid, embedding, chash)
+        needs = get_notes_needing_embeddings(conn)
+        if needs:
+            items = list(needs.values())
+            n = len(items)
+            chunk_size = 128
+            log.info("Embedding %d notes...", n)
+            print(f"Embedding {n} notes...", file=sys.stderr)
+
+            for start in range(0, n, chunk_size):
+                chunk = items[start : start + chunk_size]
+                texts = [f"# {title}\n{content}" for (_rowid, _root, title, content, _chash) in chunk]
+                embeddings = _embed_texts(texts, model_name)
+                for i, (rowid, _root, _title, _content, chash) in enumerate(chunk):
+                    upsert_embedding(conn, rowid, embeddings[i], chash)
+                done = min(start + chunk_size, n)
+                if done < n:
+                    print(f"  {done}/{n} embedded", file=sys.stderr)
+
+            log.info("Embedded %d notes.", n)
 
     return combined

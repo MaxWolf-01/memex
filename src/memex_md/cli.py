@@ -11,7 +11,7 @@ from typing import Annotated
 import tyro
 from tyro.conf import Positional
 
-from memex_md.config import Config, VaultConfig, db_path_for_vault, load_config, save_config
+from memex_md.config import CONFIG_PATH, Config, VaultConfig, db_path_for_vault, load_config, save_config
 from memex_md.db import (
     IndexedNote,
     find_links_to_note,
@@ -26,7 +26,7 @@ from memex_md.db import (
 )
 from memex_md.embeddings import embed_text, get_embedding_dim
 from memex_md.indexer import index_vault
-from memex_md.logging import get_logger
+from memex_md.logging import LOG_FILE, get_logger
 
 log = get_logger()
 
@@ -51,6 +51,8 @@ def main() -> None:
             "vault:list": vault_list,
             "vault:info": vault_info,
             "vault:remove": vault_remove,
+            "logs": logs,
+            "config": config,
         },
         prog="memex",
         description="Semantic search CLI for markdown vaults.",
@@ -268,6 +270,35 @@ def vault_remove(
         print(f"Removed vault '{name}'")
 
     save_config(config)
+
+
+def logs(
+    lines: Annotated[int, tyro.conf.arg(aliases=["-n"])] = 20,
+) -> None:
+    """Show recent log entries.
+
+    Examples:
+        memex logs
+        memex logs -n 100
+    """
+    if not LOG_FILE.exists():
+        print("No log file yet.", file=sys.stderr)
+        return
+    all_lines = LOG_FILE.read_text().splitlines()
+    for line in all_lines[-lines:]:
+        print(line)
+
+
+def config() -> None:
+    """Print the config file.
+
+    Examples:
+        memex config
+    """
+    if not CONFIG_PATH.exists():
+        print("No config file yet. Use 'memex vault:add <name> <path>...' to create one.", file=sys.stderr)
+        return
+    print(CONFIG_PATH.read_text(), end="")
 
 
 # ── Output ───────────────────────────────────────────────────────────────────
