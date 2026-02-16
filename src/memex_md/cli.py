@@ -5,6 +5,7 @@ import re
 import sqlite3
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
@@ -676,6 +677,32 @@ def _find_file_in_roots(roots: list[Path], rel_path: str) -> Path | None:
 # ── Text formatters ──────────────────────────────────────────────────────────
 
 
+def _format_grouped_paths(
+    paths: list[str],
+    suffix: Callable[[int], str] | None = None,
+) -> list[str]:
+    """Group paths by parent directory for compact display.
+
+    Returns indented lines: directory header at indent 2, filenames at indent 4.
+    Optional suffix callback receives the original index and appends to the filename.
+    """
+    grouped: dict[str, list[tuple[str, int]]] = {}
+    for i, p in enumerate(paths):
+        parent = str(Path(p).parent)
+        grouped.setdefault(parent, []).append((Path(p).name, i))
+
+    lines: list[str] = []
+    for parent in sorted(grouped):
+        header = f"{parent}/" if parent != "." else ""
+        if header:
+            lines.append(f"  {header}")
+        for name, idx in sorted(grouped[parent]):
+            extra = suffix(idx) if suffix else ""
+            indent = "    " if header else "  "
+            lines.append(f"{indent}{name}{extra}")
+    return lines
+
+
 def _format_search(result: dict) -> str:
     if "message" in result:
         return result["message"]
@@ -728,27 +755,36 @@ def _format_explore(result: dict) -> str:
     if result["outlinks"]:
         lines.append("")
         lines.append("Outlinks:")
+
+        unresolved: list[str] = []
+        resolved_paths: list[str] = []
         for link in result["outlinks"]:
-            target = link["target"]
-            if "resolved_paths" in link:
-                resolved = ", ".join(link["resolved_paths"])
-                lines.append(f"  [[{target}]]  ->  {resolved}")
-            elif link.get("resolved_path"):
-                lines.append(f"  [[{target}]]  ->  {link['resolved_path']}")
+            paths = link.get("resolved_paths") or ([link["resolved_path"]] if link.get("resolved_path") else [])
+            if not paths:
+                unresolved.append(link["target"])
             else:
-                lines.append(f"  [[{target}]]  ->  (unresolved)")
+                resolved_paths.extend(paths)
+
+        lines.extend(_format_grouped_paths(resolved_paths))
+        if unresolved:
+            lines.append("  (unresolved)")
+            for target in sorted(unresolved):
+                lines.append(f"    {target}")
 
     if result["backlinks"]:
         lines.append("")
         lines.append("Backlinks:")
-        for bl in result["backlinks"]:
-            lines.append(f"  {bl['path']}")
+        lines.extend(_format_grouped_paths([bl["path"] for bl in result["backlinks"]]))
 
     if result["similar"]:
         lines.append("")
         lines.append("Similar:")
-        for s in result["similar"]:
-            lines.append(f"  {s['path']}  ({s['distance']:.3f})")
+        lines.extend(
+            _format_grouped_paths(
+                [s["path"] for s in result["similar"]],
+                suffix=lambda i: f"  ({result['similar'][i]['distance']:.3f})",
+            )
+        )
 
     return "\n".join(lines)
 

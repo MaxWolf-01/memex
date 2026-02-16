@@ -42,10 +42,12 @@ def get_model(model_name: str) -> SentenceTransformer:
     """Load the specified model. Caches one model at a time — reloads on name change."""
     global _model, _model_name
     if _model is None or _model_name != model_name:
-        from sentence_transformers import SentenceTransformer
-
-        logger.info("Loading embedding model: %s", model_name)
+        # Import inside the quiet context so TQDM_DISABLE is set before tqdm's
+        # envwrap decorator captures the environment at import time.
         with _quiet_model_load():
+            from sentence_transformers import SentenceTransformer
+
+            logger.info("Loading embedding model: %s", model_name)
             _model = SentenceTransformer(model_name)
         _model_name = model_name
     return _model
