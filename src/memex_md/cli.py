@@ -147,6 +147,7 @@ def vault_add(
     name: Positional[str],
     paths: Positional[list[str]],
     model: str | None = None,
+    ignore: list[str] | None = None,
 ) -> None:
     """Add directories to a vault (creates it if new).
 
@@ -156,6 +157,7 @@ def vault_add(
     Examples:
         memex vault:add personal ~/notes ~/journal
         memex vault:add work ~/work-docs --model some/other-model
+        memex vault:add work ~/work-docs --ignore "*.generated.md"
     """
     config = load_config()
 
@@ -173,11 +175,14 @@ def vault_add(
                 existing.paths.append(p)
         if model is not None:
             existing.model = model
+        if ignore is not None:
+            existing.ignore = ignore
     else:
         config.vaults[name] = VaultConfig(
             name=name,
             paths=resolved_paths,
             model=model or config.default_model,
+            ignore=ignore or [],
         )
 
     save_config(config)
@@ -226,7 +231,7 @@ def vault_info(
     else:
         print("  db: not yet created")
 
-    conn = _ensure_indexed(name, vc)
+    conn = _ensure_indexed(name, vc, global_ignore=config.ignore)
     total = 0
     print("  paths:")
     for p in vc.paths:
@@ -326,12 +331,13 @@ def _get_vault_config(config: Config, vault_name: str | None) -> list[tuple[str,
     return [(vault_name, config.vaults[vault_name])]
 
 
-def _ensure_indexed(vault_name: str, vc: VaultConfig) -> sqlite3.Connection:
+def _ensure_indexed(vault_name: str, vc: VaultConfig, global_ignore: list[str] | None = None) -> sqlite3.Connection:
     """Open connection, index vault, return connection."""
     conn = get_connection(db_path_for_vault(vault_name))
     model_name = vc.model if vc.semantic_enabled else None
     embedding_dim = get_embedding_dim(vc.model) if vc.semantic_enabled else None
-    index_vault(conn, vc.paths, model_name=model_name, embedding_dim=embedding_dim)
+    ignore = (global_ignore or []) + vc.ignore
+    index_vault(conn, vc.paths, model_name=model_name, embedding_dim=embedding_dim, ignore=ignore or None)
     return conn
 
 
@@ -358,7 +364,7 @@ def do_search(
         if not vc.semantic_enabled:
             result[vault_name] = {"skipped": "semantic search disabled (model=none)"}
             continue
-        conn = _ensure_indexed(vault_name, vc)
+        conn = _ensure_indexed(vault_name, vc, global_ignore=config.ignore)
         query_embedding = embed_text(query, vc.model)
         hits = search_semantic(conn, query_embedding, limit=page * limit)
         conn.close()
@@ -412,7 +418,7 @@ def do_explore(
         return {"error": f"Unknown vault '{vault}'. Available: {list(config.vaults.keys())}"}
 
     vc = config.vaults[vault]
-    conn = _ensure_indexed(vault, vc)
+    conn = _ensure_indexed(vault, vc, global_ignore=config.ignore)
 
     note, error = resolve_note_for_user(conn, note_path)
     if error:
@@ -495,7 +501,7 @@ def do_rename(
         return {"error": f"Unknown vault '{vault}'. Available: {list(config.vaults.keys())}"}
 
     vc = config.vaults[vault]
-    conn = _ensure_indexed(vault, vc)
+    conn = _ensure_indexed(vault, vc, global_ignore=config.ignore)
 
     note, error = resolve_note_for_user(conn, note_path)
     if error:
@@ -584,7 +590,7 @@ def do_rename(
 
     conn.close()
 
-    conn = _ensure_indexed(vault, vc)
+    conn = _ensure_indexed(vault, vc, global_ignore=config.ignore)
     conn.close()
 
     result: dict = {
@@ -616,7 +622,7 @@ def do_index(vault: str | None = None) -> dict:
 
     result = {}
     for vault_name, vc in vaults:
-        conn = _ensure_indexed(vault_name, vc)
+        conn = _ensure_indexed(vault_name, vc, global_ignore=config.ignore)
 
         row = conn.execute("SELECT COUNT(*) as cnt FROM notes").fetchone()
         total = row["cnt"]

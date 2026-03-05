@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from memex_md.cli import do_explore, do_rename, do_search
-from memex_md.config import Config, VaultConfig
+from memex_md.config import DEFAULT_IGNORE, Config, VaultConfig, load_config, save_config
 
 
 def _make_config(vault_path: Path, db_dir: Path, vault_name: str = "test", model: str = "none") -> Config:
@@ -407,3 +407,52 @@ class TestRenameEdgeCases:
         result = do_rename(note_path="docs/guide", new_name="manual", vault="test")
         assert "error" in result
         assert "Multiple notes match path" in result["error"]
+
+
+class TestConfigIgnore:
+    def test_default_ignore_not_written_to_toml(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config = Config()
+        with patch("memex_md.config.CONFIG_PATH", config_path):
+            save_config(config)
+        content = config_path.read_text()
+        assert "ignore" not in content
+
+    def test_custom_global_ignore_written(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config = Config(ignore=["custom_dir", "*.tmp"])
+        with patch("memex_md.config.CONFIG_PATH", config_path):
+            save_config(config)
+        content = config_path.read_text()
+        assert '"custom_dir"' in content
+        assert '"*.tmp"' in content
+
+    def test_per_vault_ignore_written(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config = Config(
+            vaults={"test": VaultConfig(name="test", paths=[tmp_path], ignore=["*.generated.md"])},
+        )
+        with patch("memex_md.config.CONFIG_PATH", config_path):
+            save_config(config)
+        content = config_path.read_text()
+        assert '"*.generated.md"' in content
+
+    def test_config_roundtrip_with_ignore(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config = Config(
+            ignore=["custom_dir"],
+            vaults={"test": VaultConfig(name="test", paths=[tmp_path], ignore=["*.tmp"])},
+        )
+        with patch("memex_md.config.CONFIG_PATH", config_path):
+            save_config(config)
+            loaded = load_config()
+        assert loaded.ignore == ["custom_dir"]
+        assert loaded.vaults["test"].ignore == ["*.tmp"]
+
+    def test_default_ignore_preserved_when_not_in_toml(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config = Config()
+        with patch("memex_md.config.CONFIG_PATH", config_path):
+            save_config(config)
+            loaded = load_config()
+        assert loaded.ignore == DEFAULT_IGNORE

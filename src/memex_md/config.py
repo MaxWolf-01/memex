@@ -8,6 +8,17 @@ CONFIG_PATH = Path.home() / ".config" / "memex" / "config.toml"
 DATA_DIR = Path.home() / ".local" / "share" / "memex-md"
 
 DEFAULT_MODEL = "google/embeddinggemma-300m"
+DEFAULT_IGNORE: list[str] = [
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    "target",
+    "vendor",
+    "site-packages",
+]
 
 
 @dataclass
@@ -15,6 +26,7 @@ class VaultConfig:
     name: str
     paths: list[Path]
     model: str = DEFAULT_MODEL
+    ignore: list[str] = field(default_factory=list)
 
     @property
     def semantic_enabled(self) -> bool:
@@ -24,6 +36,7 @@ class VaultConfig:
 @dataclass
 class Config:
     default_model: str = DEFAULT_MODEL
+    ignore: list[str] = field(default_factory=lambda: list(DEFAULT_IGNORE))
     vaults: dict[str, VaultConfig] = field(default_factory=dict)
 
 
@@ -35,21 +48,29 @@ def load_config() -> Config:
     with open(CONFIG_PATH, "rb") as f:
         raw = tomllib.load(f)
 
-    default_model = raw.get("defaults", {}).get("model", DEFAULT_MODEL)
+    defaults = raw.get("defaults", {})
+    default_model = defaults.get("model", DEFAULT_MODEL)
     config = Config(default_model=default_model)
+    if "ignore" in defaults:
+        config.ignore = list(defaults["ignore"])
 
     for name, vault_data in raw.get("vaults", {}).items():
         raw_paths = vault_data.get("paths", [])
         paths = [Path(p).expanduser().resolve() for p in raw_paths]
         model = vault_data.get("model", default_model)
-        config.vaults[name] = VaultConfig(name=name, paths=paths, model=model)
+        ignore = list(vault_data.get("ignore", []))
+        config.vaults[name] = VaultConfig(name=name, paths=paths, model=model, ignore=ignore)
 
     return config
 
 
 def save_config(config: Config) -> None:
     """Write config to TOML file."""
-    lines = ["[defaults]", f'model = "{config.default_model}"', ""]
+    lines = ["[defaults]", f'model = "{config.default_model}"']
+    if config.ignore != DEFAULT_IGNORE:
+        ignore_str = ", ".join(f'"{p}"' for p in config.ignore)
+        lines.append(f"ignore = [{ignore_str}]")
+    lines.append("")
 
     for name in sorted(config.vaults):
         vault = config.vaults[name]
@@ -58,6 +79,9 @@ def save_config(config: Config) -> None:
         lines.append(f"paths = [{paths_str}]")
         if vault.model != config.default_model:
             lines.append(f'model = "{vault.model}"')
+        if vault.ignore:
+            ignore_str = ", ".join(f'"{p}"' for p in vault.ignore)
+            lines.append(f"ignore = [{ignore_str}]")
         lines.append("")
 
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)

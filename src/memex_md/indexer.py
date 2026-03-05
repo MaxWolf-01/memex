@@ -46,16 +46,26 @@ def content_hash(content: str) -> str:
     return hashlib.md5(content.encode()).hexdigest()
 
 
-def discover_files(vault_path: Path) -> dict[str, float]:
+def discover_files(vault_path: Path, ignore: list[str] | None = None) -> dict[str, float]:
     """Find all .md files in directory, return {relative_path: mtime}.
 
     Excludes hidden directories (starting with '.') like .obsidian, .trash, .git.
+    Excludes directories and files matching ignore patterns (fnmatch).
     """
+    from fnmatch import fnmatch
+
+    ignore = ignore or []
     files = {}
     for root_dir, dirs, filenames in os.walk(vault_path):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        dirs[:] = [
+            d
+            for d in dirs
+            if not d.startswith(".") and not any(fnmatch(d, pat) for pat in ignore)
+        ]
         for filename in filenames:
             if not filename.endswith(".md"):
+                continue
+            if any(fnmatch(filename, pat) for pat in ignore):
                 continue
             filepath = Path(root_dir) / filename
             rel_path = str(filepath.relative_to(vault_path))
@@ -67,13 +77,14 @@ def index_root(
     conn: Connection,
     root_path: Path,
     on_progress: Callable[[str], None] | None = None,
+    ignore: list[str] | None = None,
 ) -> IndexStats:
     """Index a single root directory within a vault."""
     start_time = time.monotonic()
     stats = IndexStats()
     root_str = str(root_path)
 
-    disk_files = discover_files(root_path)
+    disk_files = discover_files(root_path, ignore=ignore)
     indexed_mtimes = get_indexed_mtimes(conn, root_str)
 
     disk_paths = set(disk_files.keys())
@@ -141,6 +152,7 @@ def index_vault(
     model_name: str | None = None,
     embedding_dim: int | None = None,
     on_progress: Callable[[str], None] | None = None,
+    ignore: list[str] | None = None,
 ) -> IndexStats:
     """Index all roots in a vault. Handles DB init and embedding."""
     init_db(conn, model_name, embedding_dim)
@@ -153,7 +165,7 @@ def index_vault(
             combined.errors.append(f"Root path does not exist: {root_path}")
             continue
 
-        stats = index_root(conn, root_path, on_progress)
+        stats = index_root(conn, root_path, on_progress, ignore=ignore)
         combined.added += stats.added
         combined.updated += stats.updated
         combined.deleted += stats.deleted

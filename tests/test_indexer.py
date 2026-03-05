@@ -122,6 +122,41 @@ class TestIndexRoot:
         assert links[0]["target_raw"] == "note1"
 
 
+class TestDiscoverFilesIgnore:
+    def test_ignores_directory_by_name(self, temp_vault):
+        nm = temp_vault / "node_modules"
+        nm.mkdir()
+        (nm / "package.md").write_text("# Package\nShould be ignored.")
+
+        files = discover_files(temp_vault, ignore=["node_modules"])
+
+        assert "node_modules/package.md" not in files
+        assert len(files) == 3
+
+    def test_ignores_file_by_pattern(self, temp_vault):
+        (temp_vault / "auto.generated.md").write_text("# Auto\nGenerated file.")
+
+        files = discover_files(temp_vault, ignore=["*.generated.md"])
+
+        assert "auto.generated.md" not in files
+        assert len(files) == 3
+
+    def test_ignores_nested_directory(self, temp_vault):
+        deep = temp_vault / "a" / "b" / "node_modules"
+        deep.mkdir(parents=True)
+        (deep / "deep.md").write_text("# Deep\nDeeply nested.")
+
+        files = discover_files(temp_vault, ignore=["node_modules"])
+
+        assert all("node_modules" not in path for path in files)
+
+    def test_no_ignore_patterns_unchanged(self, temp_vault):
+        files_without = discover_files(temp_vault)
+        files_with_empty = discover_files(temp_vault, ignore=[])
+
+        assert files_without == files_with_empty
+
+
 class TestIndexVault:
     def test_indexes_multiple_roots(self, conn, tmp_path):
         root1 = tmp_path / "root1"

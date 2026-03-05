@@ -264,6 +264,33 @@ class TestWikilinkResolution:
 
         assert resolved == []
 
+    def test_resolve_ranks_exact_case_first(self, conn):
+        note_upper = ParsedNote(title="Security", aliases=[], tags=[], wikilinks=[], content="Upper.")
+        note_lower = ParsedNote(title="security", aliases=[], tags=[], wikilinks=[], content="Lower.")
+        upsert_note(conn, "/vault1", "deep/Security.md", note_upper, 1000.0, "h1")
+        upsert_note(conn, "/vault1", "security.md", note_lower, 1000.0, "h2")
+
+        resolved = resolve_wikilink(conn, "security")
+        assert resolved[0] == "security.md"
+
+    def test_resolve_ranks_shallow_path_first(self, conn):
+        note1 = ParsedNote(title="readme", aliases=[], tags=[], wikilinks=[], content="Deep.")
+        note2 = ParsedNote(title="readme", aliases=[], tags=[], wikilinks=[], content="Shallow.")
+        upsert_note(conn, "/vault1", "deep/nested/readme.md", note1, 1000.0, "h1")
+        upsert_note(conn, "/vault1", "readme.md", note2, 1000.0, "h2")
+
+        resolved = resolve_wikilink(conn, "readme")
+        assert resolved[0] == "readme.md"
+
+    def test_resolve_exact_case_beats_shallow_path(self, conn):
+        note_exact = ParsedNote(title="Security", aliases=[], tags=[], wikilinks=[], content="Exact.")
+        note_wrong = ParsedNote(title="SECURITY", aliases=[], tags=[], wikilinks=[], content="Wrong case.")
+        upsert_note(conn, "/vault1", "deep/Security.md", note_exact, 1000.0, "h1")
+        upsert_note(conn, "/vault1", "SECURITY.md", note_wrong, 1000.0, "h2")
+
+        resolved = resolve_wikilink(conn, "Security")
+        assert resolved[0] == "deep/Security.md"
+
     def test_get_outlinks_with_resolution(self, conn):
         target = ParsedNote(title="target", aliases=[], tags=[], wikilinks=[], content="Target.")
         upsert_note(conn, "/vault1", "target.md", target, 1000.0, "h1")

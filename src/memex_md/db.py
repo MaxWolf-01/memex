@@ -238,12 +238,23 @@ def get_outlinks(conn: sqlite3.Connection, root: str, path: str) -> list[tuple[s
 
 
 def resolve_wikilink(conn: sqlite3.Connection, target: str) -> list[str]:
-    """Resolve a wikilink target to note path(s). Case-insensitive title match across all roots."""
+    """Resolve a wikilink target to note path(s). Case-insensitive title match across all roots.
+
+    Results ranked by: exact case match first, then shallowest path, then alphabetical.
+    """
     rows = conn.execute(
-        "SELECT path FROM notes WHERE LOWER(title) = LOWER(?)",
+        "SELECT path, title FROM notes WHERE LOWER(title) = LOWER(?)",
         (target,),
     ).fetchall()
-    return [row["path"] for row in rows]
+    if len(rows) <= 1:
+        return [row["path"] for row in rows]
+
+    def sort_key(row: sqlite3.Row) -> tuple[int, int, str]:
+        exact_case = 0 if row["title"] == target else 1
+        depth = row["path"].count("/")
+        return (exact_case, depth, row["path"].lower())
+
+    return [row["path"] for row in sorted(rows, key=sort_key)]
 
 
 def get_backlinks(conn: sqlite3.Connection, note_name: str) -> list[str]:
