@@ -16,6 +16,7 @@ from memex_md.config import CONFIG_PATH, Config, VaultConfig, db_path_for_vault,
 from memex_md.db import (
     IndexedNote,
     find_links_to_note,
+    get_all_findable,
     get_backlinks,
     get_connection,
     get_files_with_path,
@@ -26,6 +27,7 @@ from memex_md.db import (
     search_semantic,
 )
 from memex_md.embeddings import embed_text, get_embedding_dim
+from memex_md.find import find_notes
 from memex_md.indexer import index_vault
 from memex_md.logging import LOG_FILE, get_logger
 
@@ -44,6 +46,7 @@ def main() -> None:
 
     tyro.extras.subcommand_cli_from_dict(
         {
+            "find": find,
             "search": search,
             "explore": explore,
             "rename": rename,
@@ -61,6 +64,25 @@ def main() -> None:
 
 
 # ── CLI subcommands ──────────────────────────────────────────────────────────
+
+
+def find(
+    query: Positional[str],
+    vault: Annotated[str | None, tyro.conf.arg(aliases=["-v"])] = None,
+    limit: Annotated[int, tyro.conf.arg(aliases=["-n"])] = 10,
+) -> None:
+    """Find notes by name, alias, or path using fuzzy matching.
+
+    Matches against filenames, frontmatter aliases, and paths.
+    Ranked: exact > substring > fuzzy. No embeddings needed — instant.
+
+    Examples:
+        memex find knn
+        memex find "neural ordinary"
+        memex find auth -v work
+    """
+    result = do_find(query=query, vault=vault, limit=limit)
+    _output(result, formatter=_format_find)
 
 
 def search(
@@ -406,6 +428,55 @@ def do_search(
     return result
 
 
+def do_find(
+    query: str,
+    vault: str | None = None,
+    limit: int = 10,
+) -> dict:
+    start_time = time.monotonic()
+    config = load_config()
+
+    if not config.vaults:
+        return {"error": "No vaults configured. Run 'memex vault:add <name> <path>...' first."}
+
+    vaults = _get_vault_config(config, vault)
+    if not vaults:
+        return {"error": f"Unknown vault '{vault}'. Available: {list(config.vaults.keys())}"}
+
+    all_notes: list[tuple[str, str, list[str]]] = []
+    vault_for_path: dict[str, str] = {}
+
+    for vault_name, vc in vaults:
+        conn = _ensure_indexed(vault_name, vc, global_ignore=config.ignore)
+        notes = get_all_findable(conn)
+        conn.close()
+        for path, title, aliases in notes:
+            all_notes.append((path, title, aliases))
+            vault_for_path[path] = vault_name
+
+    hits = find_notes(all_notes, query, limit=limit)
+
+    result: dict = {}
+    for hit in hits:
+        vn = vault_for_path[hit.path]
+        result.setdefault(vn, []).append(hit.path)
+
+    if not result:
+        result = {"message": f"No matches for '{query}'", "vaults_searched": [v for v, _ in vaults]}
+
+    elapsed = time.monotonic() - start_time
+    n_results = sum(len(v) for v in result.values() if isinstance(v, list))
+    log.info(
+        'find(query="%s", vault=%s, limit=%d) -> %d results in %.3fs',
+        query,
+        vault,
+        limit,
+        n_results,
+        elapsed,
+    )
+    return result
+
+
 def do_explore(
     note_path: str,
     vault: str,
@@ -707,6 +778,23 @@ def _format_grouped_paths(
             indent = "    " if header else "  "
             lines.append(f"{indent}{name}{extra}")
     return lines
+
+
+def _format_find(result: dict) -> str:
+    if "message" in result:
+        return result["message"]
+
+    lines = []
+    for vault_name, paths in result.items():
+        if not isinstance(paths, list):
+            continue
+        if len(result) > 1:
+            lines.append(vault_name)
+        for path in paths:
+            indent = "  " if len(result) > 1 else ""
+            lines.append(f"{indent}{path}")
+
+    return "\n".join(lines)
 
 
 def _format_search(result: dict) -> str:
