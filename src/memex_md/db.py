@@ -354,6 +354,12 @@ def get_note_embedding(conn: sqlite3.Connection, path: str) -> np.ndarray | None
     return np.frombuffer(row[0], dtype=np.float32) if row else None
 
 
+def get_all_findable(conn: sqlite3.Connection) -> list[tuple[str, str, list[str]]]:
+    """Get (path, title, aliases) for all notes. For fuzzy find."""
+    rows = conn.execute("SELECT path, title, aliases FROM notes").fetchall()
+    return [(row["path"], row["title"], json.loads(row["aliases"])) for row in rows]
+
+
 def search_semantic(
     conn: sqlite3.Connection, query_embedding: np.ndarray, limit: int = 10
 ) -> list[tuple[IndexedNote, float]]:

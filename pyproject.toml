@@ -16,6 +16,7 @@ classifiers = [
 ]
 dependencies = [
     "python-frontmatter>=1.1.0",
+    "rapidfuzz>=3.12.0",
     "sentence-transformers>=5.2.0",
     "sqlite-vec>=0.1.6",
     "tyro>=0.9.0",
