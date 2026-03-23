@@ -20,6 +20,7 @@ If installed, you can run `memex` directly, or via the alias `mx`:
 ```
 mx vault:add personal ~/notes ~/journal
 mx search "How does the auth flow handle token refresh?" -v personal
+mx find knn
 mx explore auth personal
 ```
 
@@ -55,6 +56,21 @@ mx vault:remove work                        # remove entire vault
 Re-add a vault with `--model` to change its embedding model (triggers re-embedding). Use `--model none` to disable semantic search (wikilink navigation only).
 
 ## Commands
+
+### find
+
+```
+mx find knn
+mx find "neural ordinary" -v personal
+mx find auth -n 20
+```
+
+Fuzzy match against note titles, frontmatter aliases, and paths. No embeddings needed — instant results. Ranked: exact title/alias > substring > fuzzy ([rapidfuzz](https://github.com/rapidfuzz/RapidFuzz) WRatio). Multi-word queries match any part; more parts hitting = ranked higher.
+
+| Flag | Description |
+|------|-------------|
+| `-v`, `--vault` | Search a specific vault (default: all) |
+| `-n`, `--limit` | Max results (default: 10) |
 
 ### search
 
