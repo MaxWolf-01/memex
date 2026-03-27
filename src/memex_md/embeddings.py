@@ -7,15 +7,24 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
-import numpy as np
-
 if TYPE_CHECKING:
+    import numpy as np
     from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
 _model: SentenceTransformer | None = None
 _model_name: str | None = None
+
+
+def is_available() -> bool:
+    """Check if sentence-transformers is installed."""
+    try:
+        import sentence_transformers  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
 
 
 @contextlib.contextmanager
@@ -45,7 +54,13 @@ def get_model(model_name: str) -> SentenceTransformer:
         # Import inside the quiet context so TQDM_DISABLE is set before tqdm's
         # envwrap decorator captures the environment at import time.
         with _quiet_model_load():
-            from sentence_transformers import SentenceTransformer
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ImportError:
+                raise ImportError(
+                    "sentence-transformers is required for semantic search. "
+                    "Install with: pip install memex-md[semantic]"
+                ) from None
 
             logger.info("Loading embedding model: %s", model_name)
             _model = SentenceTransformer(model_name)
@@ -63,6 +78,8 @@ def get_embedding_dim(model_name: str) -> int:
 
 def embed_text(text: str, model_name: str) -> np.ndarray:
     """Embed a single text string. Returns normalized float32 array."""
+    import numpy as np
+
     model = get_model(model_name)
     return model.encode(
         text, convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False
@@ -71,6 +88,8 @@ def embed_text(text: str, model_name: str) -> np.ndarray:
 
 def embed_texts(texts: list[str], model_name: str, batch_size: int = 8) -> np.ndarray:
     """Embed multiple texts. Returns normalized float32 array of shape (n, dim)."""
+    import numpy as np
+
     model = get_model(model_name)
     return model.encode(
         texts, batch_size=batch_size, convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False

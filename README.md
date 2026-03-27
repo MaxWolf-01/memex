@@ -4,16 +4,14 @@
 
 *[Memex](https://en.wikipedia.org/wiki/Memex): Vannevar Bush's 1945 concept of a "memory extender" - a device for storing and retrieving personal knowledge. The conceptual ancestor of personal wikis and second brains.*
 
-Semantic search and wikilink graph traversal for markdown vaults. Uses any [sentence-transformers](https://sbert.net/) model. Point it at your Obsidian vault (or any markdown folder).
+Fuzzy find, wikilink graph traversal, and semantic search for markdown vaults. Point it at your Obsidian vault (or any markdown folder).
 
 ## Quick Start
 
 ```bash
-uvx memex-md --help
-```
-or
-```bash
-uv tool install memex-md
+uv tool install memex-md                                                    # find, explore, rename
+uv tool install memex-md --with "memex-md[semantic]" --torch-backend=cpu    # + semantic search (CPU, ~200MB)
+uv tool install memex-md --with "memex-md[semantic]" --torch-backend=auto   # + semantic search (auto-detect GPU)
 ```
 
 If installed, you can run `memex` directly, or via the alias `mx`:
@@ -32,13 +30,15 @@ A **vault** is a named collection of directories. Each vault has its own embeddi
 
 The index contains:
 
-- Embeddings for semantic similarity (default: [embeddinggemma-300m](https://huggingface.co/google/embeddinggemma-300m))
 - Wikilink graph for backlink/outlink queries
 - Extracted frontmatter (aliases, tags)
+- Embeddings for semantic similarity (optional, default: [embeddinggemma-300m](https://huggingface.co/google/embeddinggemma-300m))
 
 Indexing is incremental — on each command, only files with changed mtimes are re-indexed. Hidden directories (`.obsidian`, `.trash`, `.git`, etc.) are excluded.
 
-**Note:** Initial indexing requires embedding computation. Example: ~3800 notes took ~7 minutes on an RTX 3070 Ti.
+Semantic search requires the `semantic` extra (`pip install memex-md[semantic]`). Without it, `find`, `explore` (outlinks/backlinks), and `rename` work normally — only `search` and the "similar notes" section in `explore` are unavailable.
+
+**Note:** Initial embedding computation is GPU-intensive. Example: ~3800 notes took ~7 minutes on an RTX 3070 Ti.
 
 ## Configuration
 

@@ -27,6 +27,7 @@ from memex_md.db import (
     search_semantic,
 )
 from memex_md.embeddings import embed_text, get_embedding_dim
+from memex_md.embeddings import is_available as semantic_available
 from memex_md.find import find_notes
 from memex_md.indexer import index_vault
 from memex_md.logging import LOG_FILE, get_logger
@@ -253,7 +254,7 @@ def vault_info(
     else:
         print("  db: not yet created")
 
-    conn = _ensure_indexed(name, vc, global_ignore=config.ignore)
+    conn = _ensure_indexed(name, vc, global_ignore=config.ignore, semantic=False)
     total = 0
     print("  paths:")
     for p in vc.paths:
@@ -353,11 +354,17 @@ def _get_vault_config(config: Config, vault_name: str | None) -> list[tuple[str,
     return [(vault_name, config.vaults[vault_name])]
 
 
-def _ensure_indexed(vault_name: str, vc: VaultConfig, global_ignore: list[str] | None = None) -> sqlite3.Connection:
-    """Open connection, index vault, return connection."""
+def _ensure_indexed(
+    vault_name: str, vc: VaultConfig, global_ignore: list[str] | None = None, *, semantic: bool = True
+) -> sqlite3.Connection:
+    """Open connection, index vault, return connection.
+
+    With semantic=False, indexes structure only (titles, wikilinks, etc.) — no model load.
+    """
     conn = get_connection(db_path_for_vault(vault_name))
-    model_name = vc.model if vc.semantic_enabled else None
-    embedding_dim = get_embedding_dim(vc.model) if vc.semantic_enabled else None
+    use_semantic = semantic and vc.semantic_enabled and semantic_available()
+    model_name = vc.model if use_semantic else None
+    embedding_dim = get_embedding_dim(vc.model) if use_semantic else None
     ignore = (global_ignore or []) + vc.ignore
     index_vault(conn, vc.paths, model_name=model_name, embedding_dim=embedding_dim, ignore=ignore or None)
     return conn
@@ -386,6 +393,8 @@ def do_search(
         if not vc.semantic_enabled:
             result[vault_name] = {"skipped": "semantic search disabled (model=none)"}
             continue
+        if not semantic_available():
+            return {"error": "sentence-transformers is required for semantic search. Install with: pip install memex-md[semantic]"}
         conn = _ensure_indexed(vault_name, vc, global_ignore=config.ignore)
         query_embedding = embed_text(query, vc.model)
         hits = search_semantic(conn, query_embedding, limit=page * limit)
@@ -447,7 +456,7 @@ def do_find(
     vault_for_path: dict[str, str] = {}
 
     for vault_name, vc in vaults:
-        conn = _ensure_indexed(vault_name, vc, global_ignore=config.ignore)
+        conn = _ensure_indexed(vault_name, vc, global_ignore=config.ignore, semantic=False)
         notes = get_all_findable(conn)
         conn.close()
         for path, title, aliases in notes:
@@ -489,7 +498,7 @@ def do_explore(
         return {"error": f"Unknown vault '{vault}'. Available: {list(config.vaults.keys())}"}
 
     vc = config.vaults[vault]
-    conn = _ensure_indexed(vault, vc, global_ignore=config.ignore)
+    conn = _ensure_indexed(vault, vc, global_ignore=config.ignore, semantic=False)
 
     note, error = resolve_note_for_user(conn, note_path)
     if error:
@@ -502,7 +511,7 @@ def do_explore(
     backlink_paths = get_backlinks(conn, note_name)
 
     similar_notes: list[tuple[IndexedNote, float]] = []
-    if vc.semantic_enabled:
+    if vc.semantic_enabled and semantic_available():
         embedding = get_note_embedding(conn, note.path)
         if embedding is not None:
             candidates = search_semantic(conn, embedding, limit=10)
@@ -572,7 +581,7 @@ def do_rename(
         return {"error": f"Unknown vault '{vault}'. Available: {list(config.vaults.keys())}"}
 
     vc = config.vaults[vault]
-    conn = _ensure_indexed(vault, vc, global_ignore=config.ignore)
+    conn = _ensure_indexed(vault, vc, global_ignore=config.ignore, semantic=False)
 
     note, error = resolve_note_for_user(conn, note_path)
     if error:
@@ -661,7 +670,7 @@ def do_rename(
 
     conn.close()
 
-    conn = _ensure_indexed(vault, vc, global_ignore=config.ignore)
+    conn = _ensure_indexed(vault, vc, global_ignore=config.ignore, semantic=False)
     conn.close()
 
     result: dict = {

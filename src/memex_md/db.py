@@ -1,12 +1,17 @@
 """SQLite database for note indexing with vector search. One DB per vault."""
 
+from __future__ import annotations
+
 import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import numpy as np
 import sqlite_vec
+
+if TYPE_CHECKING:
+    import numpy as np
 
 from memex_md.parser import ParsedNote
 
@@ -328,6 +333,8 @@ def find_links_to_note(conn: sqlite3.Connection, note_path: str) -> list[tuple[s
 
 def upsert_embedding(conn: sqlite3.Connection, note_rowid: int, embedding: np.ndarray, content_hash: str) -> None:
     """Insert or update embedding for a note and mark it as up-to-date."""
+    import numpy as np
+
     conn.execute("DELETE FROM notes_vec WHERE note_rowid = ?", (note_rowid,))
     conn.execute(
         "INSERT INTO notes_vec (note_rowid, embedding) VALUES (?, ?)",
@@ -347,6 +354,8 @@ def get_note_rowid(conn: sqlite3.Connection, path: str) -> int | None:
 
 def get_note_embedding(conn: sqlite3.Connection, path: str) -> np.ndarray | None:
     """Get the embedding vector for a note."""
+    import numpy as np
+
     rowid = get_note_rowid(conn, path)
     if rowid is None:
         return None
@@ -364,6 +373,8 @@ def search_semantic(
     conn: sqlite3.Connection, query_embedding: np.ndarray, limit: int = 10
 ) -> list[tuple[IndexedNote, float]]:
     """Semantic search using vector similarity. Returns (note, distance) pairs."""
+    import numpy as np
+
     rows = conn.execute(
         """
         SELECT notes.*, notes_vec.distance
