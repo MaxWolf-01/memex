@@ -4,10 +4,10 @@ import logging
 import os
 from importlib.metadata import version
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
 
-LOG_DIR = Path.home() / ".local" / "share" / "memex-md"
-LOG_FILE = LOG_DIR / "memex.log"
+from memex_md.config import DATA_DIR
+
+LOG_FILE = DATA_DIR / "memex.log"
 MAX_BYTES = 5 * 1024 * 1024
 
 
@@ -20,7 +20,7 @@ def get_logger() -> logging.Logger:
 
     logger.setLevel(logging.INFO)
 
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     handler = RotatingFileHandler(
         LOG_FILE,

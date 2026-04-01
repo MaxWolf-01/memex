@@ -1,11 +1,20 @@
 """Configuration for memex: vault definitions, model settings, data paths."""
 
+import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-CONFIG_PATH = Path.home() / ".config" / "memex" / "config.toml"
-DATA_DIR = Path.home() / ".local" / "share" / "memex-md"
+_config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+_data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+
+CONFIG_PATH = _config_home / "memex" / "config.toml"
+DATA_DIR = _data_home / "memex"
+
+# One-time migration from old data dir name
+_old_data_dir = _data_home / "memex-md"
+if _old_data_dir.is_dir() and not DATA_DIR.exists():
+    _old_data_dir.rename(DATA_DIR)
 
 DEFAULT_MODEL = "google/embeddinggemma-300m"
 DEFAULT_IGNORE: list[str] = [
