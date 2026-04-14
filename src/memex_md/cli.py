@@ -2,7 +2,9 @@
 
 import json as _json
 import re
+import shutil
 import sqlite3
+import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -50,6 +52,7 @@ def main() -> None:
             "find": find,
             "search": search,
             "explore": explore,
+            "read": read,
             "rename": rename,
             "index": index,
             "vault:add": vault_add,
@@ -130,6 +133,33 @@ def explore(
     """
     result = do_explore(note_path=note_path, vault=vault, concise=not full)
     _output(result, formatter=_format_explore)
+
+
+def read(
+    ref: Positional[str],
+    strip_frontmatter: bool = False,
+    max_depth: int = 10,
+) -> None:
+    """Read a note with ![[embeds]] recursively inlined.
+
+    Resolves wikilink-style references including #heading and #^block-id
+    targets. Requires Obsidian to be running with CLI enabled.
+
+    Non-markdown embeds (images, PDFs, etc.) are left as-is.
+
+    Args:
+        ref: Note name, or 'note#heading', or 'note#^block-id'.
+        strip_frontmatter: Remove YAML frontmatter from output.
+        max_depth: Maximum embed recursion depth.
+
+    Examples:
+        memex read "evergreen notes"
+        memex read "note-taking#Core Principles"
+        memex read "cognition#^my-block-ref"
+        memex read "my note" --strip-frontmatter
+    """
+    result = do_read(ref=ref, strip_frontmatter=strip_frontmatter, max_depth=max_depth)
+    _output(result, formatter=_format_read)
 
 
 def rename(
@@ -394,7 +424,9 @@ def do_search(
             result[vault_name] = {"skipped": "semantic search disabled (model=none)"}
             continue
         if not semantic_available():
-            return {"error": "sentence-transformers is required for semantic search. Install with: pip install memex-md[semantic]"}
+            return {
+                "error": "sentence-transformers is required for semantic search. Install with: pip install memex-md[semantic]"
+            }
         conn = _ensure_indexed(vault_name, vc, global_ignore=config.ignore)
         query_embedding = embed_text(query, vc.model)
         hits = search_semantic(conn, query_embedding, limit=page * limit)
@@ -691,6 +723,175 @@ def do_rename(
     return result
 
 
+_READ_JS = r"""
+(async () => {
+  const MEDIA = new Set(".png .jpg .jpeg .gif .svg .webp .webm .mp4 .mov .pdf .mp3 .ogg .wav .flac .avif".split(" "));
+
+  function stripFM(t) {
+    if (t.startsWith("---")) {
+      const e = t.indexOf("---", 3);
+      if (e !== -1) return t.slice(e + 3).replace(/^\n+/, "");
+    }
+    return t;
+  }
+
+  async function getBlock(file, id) {
+    const c = app.metadataCache.getFileCache(file);
+    if (!c?.blocks?.[id]) return null;
+    const b = c.blocks[id];
+    const lines = (await app.vault.read(file)).split("\n");
+    const sl = lines.slice(b.position.start.line, b.position.end.line + 1);
+    sl[sl.length - 1] = sl[sl.length - 1].replace(
+      new RegExp("\\s*\\^" + id + "$"), ""
+    );
+    if (sl.length && sl[sl.length - 1].trim() === "") sl.pop();
+    return sl.join("\n");
+  }
+
+  async function getHeading(file, heading) {
+    const c = app.metadataCache.getFileCache(file);
+    const text = await app.vault.read(file);
+    if (!c?.headings) return stripFM(text);
+    const lines = text.split("\n");
+    let si = -1, lv = 0;
+    for (const h of c.headings) {
+      if (h.heading === heading) { si = h.position.start.line + 1; lv = h.level; break; }
+    }
+    if (si === -1) return stripFM(text);
+    for (const h of c.headings) {
+      if (h.position.start.line >= si && h.level <= lv)
+        return lines.slice(si, h.position.start.line).join("\n").trim();
+    }
+    return lines.slice(si).join("\n").trim();
+  }
+
+  async function resolveText(text, srcPath, seen, depth, maxD) {
+    if (depth >= maxD) return text;
+    const parts = [];
+    let last = 0;
+    const re = /!\[\[([^\]]+)\]\]/g;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      parts.push(text.slice(last, m.index));
+      let ref = m[1];
+      const pi = ref.indexOf("|");
+      if (pi >= 0) ref = ref.slice(0, pi);
+      const hi = ref.indexOf("#");
+      const link = hi >= 0 ? ref.slice(0, hi) : ref;
+      const sub = hi >= 0 ? ref.slice(hi + 1) : null;
+      const di = link.lastIndexOf(".");
+      if (di >= 0 && MEDIA.has(link.slice(di).toLowerCase())) {
+        parts.push(m[0]);
+        last = m.index + m[0].length;
+        continue;
+      }
+      const resolved = app.metadataCache.getFirstLinkpathDest(link, srcPath);
+      if (!resolved || !resolved.path.endsWith(".md")) {
+        parts.push(m[0]);
+        last = m.index + m[0].length;
+        continue;
+      }
+      if (seen.has(resolved.path)) {
+        parts.push("<!-- circular: " + link + " -->");
+        last = m.index + m[0].length;
+        continue;
+      }
+      const ns = new Set(seen);
+      ns.add(resolved.path);
+      let embedded;
+      if (sub) {
+        if (sub.startsWith("^")) {
+          embedded = await getBlock(resolved, sub.slice(1));
+          if (embedded === null) {
+            parts.push(m[0]);
+            last = m.index + m[0].length;
+            continue;
+          }
+        } else {
+          embedded = await getHeading(resolved, sub);
+        }
+        embedded = await resolveText(embedded, resolved.path, ns, depth + 1, maxD);
+      } else {
+        const raw = stripFM(await app.vault.read(resolved));
+        embedded = await resolveText(raw, resolved.path, ns, depth + 1, maxD);
+      }
+      parts.push(embedded.trim());
+      last = m.index + m[0].length;
+    }
+    parts.push(text.slice(last));
+    return parts.join("");
+  }
+
+  const note = %%NOTE%%;
+  const subpath = %%SUBPATH%%;
+  const maxDepth = %%MAX_DEPTH%%;
+  const stripFMTop = %%STRIP_FM%%;
+
+  const file =
+    app.metadataCache.getFirstLinkpathDest(note, "") ||
+    app.vault.getAbstractFileByPath(note);
+  if (!file) return "Error: not found: " + note;
+
+  const seen = new Set([file.path]);
+  let result;
+  if (subpath) {
+    if (subpath.startsWith("^")) {
+      result = await getBlock(file, subpath.slice(1));
+      if (result === null) return "Error: block not found: ^" + subpath.slice(1);
+    } else {
+      result = await getHeading(file, subpath);
+    }
+    result = await resolveText(result, file.path, seen, 0, maxDepth);
+  } else {
+    let content = await app.vault.read(file);
+    if (stripFMTop) content = stripFM(content);
+    result = await resolveText(content, file.path, seen, 0, maxDepth);
+  }
+  return result;
+})()
+"""
+
+
+def do_read(
+    ref: str,
+    strip_frontmatter: bool = False,
+    max_depth: int = 10,
+) -> dict:
+    if not shutil.which("obsidian-cli"):
+        return {"error": "obsidian-cli not found. Requires Obsidian to be running with CLI enabled."}
+
+    hash_idx = ref.find("#")
+    if hash_idx >= 0:
+        note, subpath = ref[:hash_idx], ref[hash_idx + 1 :]
+    else:
+        note, subpath = ref, None
+
+    js = _READ_JS
+    js = js.replace("%%NOTE%%", _json.dumps(note))
+    js = js.replace("%%SUBPATH%%", _json.dumps(subpath) if subpath else "null")
+    js = js.replace("%%MAX_DEPTH%%", str(max_depth))
+    js = js.replace("%%STRIP_FM%%", "true" if strip_frontmatter else "false")
+
+    cmd = ["obsidian-cli", "eval", f"code={js}"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        if "not enabled" in stderr.lower() or "not running" in stderr.lower():
+            return {"error": "Obsidian is not running or CLI is not enabled in Settings > General."}
+        return {"error": stderr or "obsidian-cli eval failed"}
+
+    output = result.stdout
+    if output.startswith("=> "):
+        output = output[3:]
+    if output.startswith('"') and output.endswith("\n"):
+        output = _json.loads(output.strip())
+
+    if isinstance(output, str) and output.startswith("Error: "):
+        return {"error": output[7:]}
+
+    return {"content": output}
+
+
 def do_index(vault: str | None = None) -> dict:
     config = load_config()
     if not config.vaults:
@@ -908,6 +1109,10 @@ def _format_rename(result: dict) -> str:
             lines.append(f"  {item['source']} [[{item['link']}]]")
 
     return "\n".join(lines)
+
+
+def _format_read(result: dict) -> str:
+    return result.get("content", "")
 
 
 def _format_index(result: dict) -> str:
