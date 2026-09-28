@@ -27,7 +27,7 @@ Issues = "https://github.com/MaxWolf-01/memex/issues"
 
 [project.optional-dependencies]
 semantic = [
-    "sentence-transformers>=5.2.0",
+    "sentence-transformers>=5.4.0",
 ]
 dev = [
     "pre-commit>=4.0.0",

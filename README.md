@@ -55,6 +55,13 @@ mx vault:remove work                        # remove entire vault
 
 Re-add a vault with `--model` to change its embedding model (triggers re-embedding). Use `--model none` to disable semantic search (wikilink navigation only).
 
+Embeddings run on a GPU when torch finds one. To pin every vault to one device, set it under `[defaults]`:
+
+```toml
+[defaults]
+device = "cpu"   # any torch device: "cpu", "cuda", "cuda:1", "mps"
+```
+
 ## Commands
 
 ### find

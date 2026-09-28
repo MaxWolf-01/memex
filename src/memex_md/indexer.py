@@ -57,11 +57,7 @@ def discover_files(vault_path: Path, ignore: list[str] | None = None) -> dict[st
     ignore = ignore or []
     files = {}
     for root_dir, dirs, filenames in os.walk(vault_path):
-        dirs[:] = [
-            d
-            for d in dirs
-            if not d.startswith(".") and not any(fnmatch(d, pat) for pat in ignore)
-        ]
+        dirs[:] = [d for d in dirs if not d.startswith(".") and not any(fnmatch(d, pat) for pat in ignore)]
         for filename in filenames:
             if not filename.endswith(".md"):
                 continue
@@ -153,6 +149,7 @@ def index_vault(
     embedding_dim: int | None = None,
     on_progress: Callable[[str], None] | None = None,
     ignore: list[str] | None = None,
+    device: str | None = None,
 ) -> IndexStats:
     """Index all roots in a vault. Handles DB init and embedding."""
     init_db(conn, model_name, embedding_dim)
@@ -187,7 +184,7 @@ def index_vault(
             for start in range(0, n, chunk_size):
                 chunk = items[start : start + chunk_size]
                 texts = [f"# {title}\n{content}" for (_rowid, _root, title, content, _chash) in chunk]
-                embeddings = _embed_texts(texts, model_name)
+                embeddings = _embed_texts(texts, model_name, device)
                 for i, (rowid, _root, _title, _content, chash) in enumerate(chunk):
                     upsert_embedding(conn, rowid, embeddings[i], chash)
                 done = min(start + chunk_size, n)

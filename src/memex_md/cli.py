@@ -385,7 +385,12 @@ def _get_vault_config(config: Config, vault_name: str | None) -> list[tuple[str,
 
 
 def _ensure_indexed(
-    vault_name: str, vc: VaultConfig, global_ignore: list[str] | None = None, *, semantic: bool = True
+    vault_name: str,
+    vc: VaultConfig,
+    global_ignore: list[str] | None = None,
+    *,
+    semantic: bool = True,
+    device: str | None = None,
 ) -> sqlite3.Connection:
     """Open connection, index vault, return connection.
 
@@ -394,9 +399,11 @@ def _ensure_indexed(
     conn = get_connection(db_path_for_vault(vault_name))
     use_semantic = semantic and vc.semantic_enabled and semantic_available()
     model_name = vc.model if use_semantic else None
-    embedding_dim = get_embedding_dim(vc.model) if use_semantic else None
+    embedding_dim = get_embedding_dim(vc.model, device) if use_semantic else None
     ignore = (global_ignore or []) + vc.ignore
-    index_vault(conn, vc.paths, model_name=model_name, embedding_dim=embedding_dim, ignore=ignore or None)
+    index_vault(
+        conn, vc.paths, model_name=model_name, embedding_dim=embedding_dim, ignore=ignore or None, device=device
+    )
     return conn
 
 
@@ -427,8 +434,8 @@ def do_search(
             return {
                 "error": "sentence-transformers is required for semantic search. Install with: pip install memex-md[semantic]"
             }
-        conn = _ensure_indexed(vault_name, vc, global_ignore=config.ignore)
-        query_embedding = embed_text(query, vc.model)
+        conn = _ensure_indexed(vault_name, vc, global_ignore=config.ignore, device=config.device)
+        query_embedding = embed_text(query, vc.model, config.device)
         hits = search_semantic(conn, query_embedding, limit=page * limit)
         conn.close()
 
@@ -903,7 +910,7 @@ def do_index(vault: str | None = None) -> dict:
 
     result = {}
     for vault_name, vc in vaults:
-        conn = _ensure_indexed(vault_name, vc, global_ignore=config.ignore)
+        conn = _ensure_indexed(vault_name, vc, global_ignore=config.ignore, device=config.device)
 
         row = conn.execute("SELECT COUNT(*) as cnt FROM notes").fetchone()
         total = row["cnt"]

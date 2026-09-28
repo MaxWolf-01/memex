@@ -45,6 +45,7 @@ class VaultConfig:
 @dataclass
 class Config:
     default_model: str = DEFAULT_MODEL
+    device: str | None = None  # torch device for every vault's model ("cpu", "cuda"); None picks a GPU if there is one
     ignore: list[str] = field(default_factory=lambda: list(DEFAULT_IGNORE))
     vaults: dict[str, VaultConfig] = field(default_factory=dict)
 
@@ -59,7 +60,7 @@ def load_config() -> Config:
 
     defaults = raw.get("defaults", {})
     default_model = defaults.get("model", DEFAULT_MODEL)
-    config = Config(default_model=default_model)
+    config = Config(default_model=default_model, device=defaults.get("device"))
     if "ignore" in defaults:
         config.ignore = list(defaults["ignore"])
 
@@ -76,6 +77,8 @@ def load_config() -> Config:
 def save_config(config: Config) -> None:
     """Write config to TOML file."""
     lines = ["[defaults]", f'model = "{config.default_model}"']
+    if config.device is not None:
+        lines.append(f'device = "{config.device}"')
     if config.ignore != DEFAULT_IGNORE:
         ignore_str = ", ".join(f'"{p}"' for p in config.ignore)
         lines.append(f"ignore = [{ignore_str}]")
